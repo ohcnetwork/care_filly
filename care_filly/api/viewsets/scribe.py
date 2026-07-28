@@ -20,8 +20,8 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from . import engine, quota, store
-from .plugin_settings import get_setting, mock_mode
+from care_filly import engine, quota, store
+from care_filly.settings import mock_mode, plugin_settings
 
 logger = logging.getLogger("care_filly")
 
@@ -63,7 +63,7 @@ def _authenticate(
     Returns (error_response, user). `user` is the authenticated CARE user
     or None when authenticated via static token / standalone mode.
     """
-    static_token = get_setting("FILLY_AUTH_TOKEN")
+    static_token = plugin_settings.FILLY_AUTH_TOKEN
     auth_header = request.headers.get("Authorization", "")
     if static_token and auth_header == f"Bearer {static_token}":
         return None, None
@@ -345,7 +345,7 @@ def _finalize(session_id: str) -> None:
 
     usage_summary = quota.record_usage(session, llm_usage)
 
-    from .history_views import record_history
+    from care_filly.api.viewsets.history import record_history
 
     record_history(
         session,

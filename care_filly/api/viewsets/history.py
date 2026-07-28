@@ -24,8 +24,8 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import FillyHistory
-from .quota import parse_facility_id
+from care_filly.models import FillyHistory
+from care_filly.quota import parse_facility_id
 
 logger = logging.getLogger("care_filly")
 
@@ -75,7 +75,7 @@ def record_history(
 
 
 def _require_user(request: HttpRequest):
-    from .quota_views import _require_user as require_user
+    from care_filly.api.viewsets.quota import _require_user as require_user
 
     return require_user(request)
 

@@ -2,7 +2,7 @@
 
 from django.contrib.auth import get_user_model
 
-from care_filly.history_views import _history_dict, record_history
+from care_filly.api.viewsets.history import _history_dict, record_history
 from care_filly.models import FillyHistory
 
 user = get_user_model().objects.first()

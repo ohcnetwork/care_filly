@@ -24,9 +24,9 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from .models import FillyQuota, FillyUserPreference, used_tokens
-from .quota import current_tnc, parse_facility_id
-from .views import _authenticate, _body
+from care_filly.api.viewsets.scribe import _authenticate, _body
+from care_filly.models import FillyQuota, FillyUserPreference, used_tokens
+from care_filly.quota import current_tnc, parse_facility_id
 
 logger = logging.getLogger("care_filly")
 

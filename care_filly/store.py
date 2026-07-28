@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 from django.core.cache import cache
 
-from .plugin_settings import SESSION_TTL_SECONDS
+from .settings import SESSION_TTL_SECONDS
 
 _CHUNK_RE = re.compile(r"audio_(\d+)\.\w+$")
 _LOCK_TTL = 5

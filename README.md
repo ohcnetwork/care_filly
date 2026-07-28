@@ -6,14 +6,14 @@ module that records clinician dictation and turns it into structured form-fill
 data with **chunked, near-realtime transcription** (transcript ready ~1–2s after
 the recording stops, structured JSON a few seconds later).
 
-Ships as two things from the same codebase:
+**`care_filly`** is a Django app plugged into [CARE](https://github.com/ohcnetwork/care)
+via `plugs.manager.PlugManager`, mounted at `/api/care_filly/`. It reuses CARE's own
+auth, adds per-facility/per-user quota enforcement, terms-and-conditions gating, and
+persists scribe session history.
 
-- **`care_filly`** — a Django app plugged into [CARE](https://github.com/ohcnetwork/care)
-  via `plugs.manager.PlugManager`, mounted at `/api/care_filly/`. This is the primary,
-  production-facing mode: it reuses CARE's own auth, adds per-facility/per-user quota
-  enforcement, terms-and-conditions gating, and persists scribe session history.
-- **`app/`** — a standalone FastAPI server implementing the same protocol, useful for
-  local frontend development without running the whole CARE stack.
+This plugin follows the structure of
+[ohcnetwork/care_hello](https://github.com/ohcnetwork/care_hello), the CARE
+plugin boilerplate.
 
 ## How it's fast
 
@@ -57,41 +57,18 @@ equivalent environment variables — see [Environment](#environment) below.
 CARE's own JWT auth is used to authenticate requests — the frontend just sends
 the logged-in user's access token, same as any other CARE API call.
 
-## Running standalone (frontend dev mode)
-
-```fish
-python3 -m venv .venv
-.venv/bin/pip install -e ".[standalone]"
-
-cp .env.example .env             # add your GROQ_API_KEY / SARVAM_API_KEY
-.venv/bin/uvicorn app.main:app --port 8090
-```
-
-Using `.venv/bin/...` directly avoids shell activation issues (fish users:
-`source .venv/bin/activate.fish` if you prefer an activated shell).
-
-No keys yet? Set `FILLY_MOCK=1` in `.env` to run the full flow with fake
+No keys yet? Set `FILLY_MOCK=1` to run the full flow with fake
 transcription/extraction (useful for wiring up the frontend without any
 provider accounts).
 
 ### Frontend wiring
 
-In `care_filly_fe`'s `.env`:
-
-```
-REACT_SCRIBE_BE_URL=http://127.0.0.1:8090
-```
-
-Use `127.0.0.1`, not `localhost` — some browsers (Firefox) resolve localhost
-to IPv6 `::1`, which uvicorn does not listen on by default.
-
-When this variable is unset, the frontend talks to the CARE-plugin mode at
-`/api/care_filly/` instead.
+The frontend talks to the plugin at `/api/care_filly/` on the CARE API origin
+(no extra configuration needed — leave `REACT_SCRIBE_BE_URL` unset).
 
 ## Protocol endpoints (MedScribe Alliance v0.1)
 
-Available in both modes, at `/v1/...` (standalone) or `/api/care_filly/v1/...`
-(CARE plugin):
+Mounted at `/api/care_filly/v1/...`:
 
 | Method | Path                                       | Purpose                                                         |
 | ------ | ------------------------------------------ | --------------------------------------------------------------- |
@@ -103,8 +80,7 @@ Available in both modes, at `/v1/...` (standalone) or `/api/care_filly/v1/...`
 | PATCH  | `/v1/sessions/{id}`                        | Update session metadata                                         |
 | POST   | `/v1/sessions/{id}/process/template/{tid}` | Re-run extraction                                               |
 
-The CARE-plugin mode additionally exposes quota and history management (not
-present in the standalone server):
+The CARE-plugin mode additionally exposes quota and history management:
 
 | Method           | Path                                      | Purpose                                          |
 | ---------------- | ------------------------------------------ | -------------------------------------------------- |
@@ -132,7 +108,6 @@ present in the standalone server):
 | `GROQ_ASR_MODEL`    | `whisper-large-v3-turbo`  | ASR model when using Groq                                                    |
 | `GROQ_LLM_MODEL`    | `llama-3.3-70b-versatile` | Extraction model                                                                                            |
 | `OPENAI_LLM_MODEL`  | `gpt-4o-mini`             | Extraction model (OpenAI)                                                                                   |
-| `FILLY_AUTH_TOKEN` | —                         | Standalone mode only: if set, requires `Authorization: Bearer <token>` |
-| `PUBLIC_BASE_URL`   | `http://localhost:8090`   | Standalone mode only: public URL used in `upload_url`                                                                             |
+| `FILLY_AUTH_TOKEN` | —                         | Optional static bearer token accepted instead of a CARE JWT (testing)  |
 | `FILLY_MOCK`       | `0`                       | `1` = fake ASR/LLM, no keys needed                                                                          |
 | `FILLY_TNC`        | (built-in text)           | Terms & conditions shown before a user's first scribe session               |

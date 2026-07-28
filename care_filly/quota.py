@@ -13,7 +13,7 @@ import uuid
 from typing import Any, Optional
 
 from .models import FillyQuota, FillyUsage, FillyUserPreference, used_tokens
-from .plugin_settings import get_setting
+from .settings import plugin_settings
 
 logger = logging.getLogger("care_filly")
 
@@ -23,7 +23,7 @@ def hash_string(value: str) -> str:
 
 
 def current_tnc() -> tuple[str, str]:
-    tnc = get_setting("FILLY_TNC")
+    tnc = plugin_settings.FILLY_TNC
     return tnc, hash_string(tnc)
 
 

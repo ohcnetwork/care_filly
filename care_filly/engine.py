@@ -9,12 +9,12 @@ from typing import Any, Optional
 
 import requests
 
-from .plugin_settings import (
+from care_filly.settings import (
     GROQ_BASE_URL,
     OPENAI_BASE_URL,
     SARVAM_BASE_URL,
-    get_setting,
     mock_mode,
+    plugin_settings,
 )
 
 logger = logging.getLogger("care_filly")
@@ -69,17 +69,17 @@ _SARVAM_LANGS = {"hi", "bn", "kn", "ml", "mr", "od", "pa", "ta", "te", "en", "gu
 
 
 def _transcribe_sarvam(audio: bytes, filename: str, language: Optional[str]) -> str:
-    api_key = get_setting("SARVAM_API_KEY")
+    api_key = plugin_settings.SARVAM_API_KEY
     if not api_key:
         raise RuntimeError("SARVAM_API_KEY is not configured (or set FILLY_MOCK=1)")
 
-    model = get_setting("SARVAM_ASR_MODEL")
+    model = plugin_settings.SARVAM_ASR_MODEL
     data = {
         "model": model,
         "language_code": (f"{language}-IN" if language in _SARVAM_LANGS else "unknown"),
     }
     if model.startswith("saaras"):
-        data["mode"] = get_setting("SARVAM_ASR_MODE")
+        data["mode"] = plugin_settings.SARVAM_ASR_MODE
 
     response = requests.post(
         f"{SARVAM_BASE_URL}/speech-to-text",
@@ -93,12 +93,12 @@ def _transcribe_sarvam(audio: bytes, filename: str, language: Optional[str]) -> 
 
 
 def _transcribe_groq(audio: bytes, filename: str, language: Optional[str]) -> str:
-    api_key = get_setting("GROQ_API_KEY")
+    api_key = plugin_settings.GROQ_API_KEY
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is not configured (or set FILLY_MOCK=1)")
 
     data = {
-        "model": get_setting("GROQ_ASR_MODEL"),
+        "model": plugin_settings.GROQ_ASR_MODEL,
         "response_format": "json",
         "temperature": "0",
     }
@@ -120,7 +120,7 @@ def transcribe_chunk(audio: bytes, filename: str, language: Optional[str]) -> st
     if mock_mode():
         return f"[mock transcript for {filename}]"
 
-    if get_setting("ASR_PROVIDER").lower() == "sarvam":
+    if plugin_settings.ASR_PROVIDER.lower() == "sarvam":
         text = _transcribe_sarvam(audio, filename, language)
     else:
         text = _transcribe_groq(audio, filename, language)
@@ -159,14 +159,14 @@ def extract_structured(
             {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
         )
 
-    if get_setting("LLM_PROVIDER").lower() == "openai":
+    if plugin_settings.LLM_PROVIDER.lower() == "openai":
         base_url = OPENAI_BASE_URL
-        api_key = get_setting("OPENAI_API_KEY")
-        model = get_setting("OPENAI_LLM_MODEL")
+        api_key = plugin_settings.OPENAI_API_KEY
+        model = plugin_settings.OPENAI_LLM_MODEL
     else:
         base_url = GROQ_BASE_URL
-        api_key = get_setting("GROQ_API_KEY")
-        model = get_setting("GROQ_LLM_MODEL")
+        api_key = plugin_settings.GROQ_API_KEY
+        model = plugin_settings.GROQ_LLM_MODEL
 
     if not api_key:
         raise RuntimeError("API key for the configured LLM provider is not set")
