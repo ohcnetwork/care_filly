@@ -19,4 +19,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["care_filly"]
+packages = ["care_filly", "care_filly.*"]
