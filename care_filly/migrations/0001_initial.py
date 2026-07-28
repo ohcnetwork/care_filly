@@ -1,0 +1,276 @@
+import uuid
+
+import django.db.models.deletion
+from django.conf import settings
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+    initial = True
+
+    dependencies = [
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name="FillyQuota",
+            fields=[
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "external_id",
+                    models.UUIDField(db_index=True, default=uuid.uuid4, unique=True),
+                ),
+                (
+                    "created_date",
+                    models.DateTimeField(auto_now_add=True, db_index=True),
+                ),
+                ("modified_date", models.DateTimeField(auto_now=True)),
+                ("facility_external_id", models.UUIDField(db_index=True)),
+                (
+                    "tokens",
+                    models.IntegerField(
+                        default=0,
+                        help_text="Monthly token pool (facility row) or allowance (user row)",
+                    ),
+                ),
+                (
+                    "tokens_per_user",
+                    models.IntegerField(
+                        default=0,
+                        help_text="Allowance copied to each user quota (facility rows only)",
+                    ),
+                ),
+                (
+                    "allow_scribe",
+                    models.BooleanField(
+                        default=True,
+                        help_text="Whether scribe is enabled for this user/facility",
+                    ),
+                ),
+                (
+                    "tnc_hash",
+                    models.CharField(
+                        blank=True,
+                        help_text="Hash of the terms and conditions accepted by the user",
+                        max_length=255,
+                        null=True,
+                    ),
+                ),
+                ("tnc_accepted_date", models.DateTimeField(blank=True, null=True)),
+                (
+                    "created_by",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="created_filly_quotas",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        blank=True,
+                        help_text="Null for the facility-level quota row",
+                        null=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="filly_quotas",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+            ],
+            options={
+                "verbose_name": "Filly Quota",
+                "verbose_name_plural": "Filly Quotas",
+            },
+        ),
+        migrations.CreateModel(
+            name="FillyUsage",
+            fields=[
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "external_id",
+                    models.UUIDField(db_index=True, default=uuid.uuid4, unique=True),
+                ),
+                (
+                    "created_date",
+                    models.DateTimeField(auto_now_add=True, db_index=True),
+                ),
+                (
+                    "facility_external_id",
+                    models.UUIDField(blank=True, db_index=True, null=True),
+                ),
+                ("session_id", models.CharField(db_index=True, max_length=64)),
+                ("input_tokens", models.IntegerField(default=0)),
+                ("output_tokens", models.IntegerField(default=0)),
+                (
+                    "audio_seconds",
+                    models.IntegerField(
+                        default=0, help_text="Estimated recorded audio duration"
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="filly_usages",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+            ],
+            options={
+                "verbose_name": "Filly Usage",
+                "verbose_name_plural": "Filly Usages",
+            },
+        ),
+        migrations.CreateModel(
+            name="FillyUserPreference",
+            fields=[
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "external_id",
+                    models.UUIDField(db_index=True, default=uuid.uuid4, unique=True),
+                ),
+                ("created_date", models.DateTimeField(auto_now_add=True)),
+                ("modified_date", models.DateTimeField(auto_now=True)),
+                ("scribe_enabled", models.BooleanField(default=False)),
+                (
+                    "tnc_hash",
+                    models.CharField(blank=True, max_length=255, null=True),
+                ),
+                ("tnc_accepted_date", models.DateTimeField(blank=True, null=True)),
+                (
+                    "user",
+                    models.OneToOneField(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="filly_preference",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+            ],
+            options={
+                "verbose_name": "Filly User Preference",
+                "verbose_name_plural": "Filly User Preferences",
+            },
+        ),
+        migrations.CreateModel(
+            name="FillyHistory",
+            fields=[
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "external_id",
+                    models.UUIDField(db_index=True, default=uuid.uuid4, unique=True),
+                ),
+                (
+                    "created_date",
+                    models.DateTimeField(auto_now_add=True, db_index=True),
+                ),
+                (
+                    "facility_external_id",
+                    models.UUIDField(blank=True, db_index=True, null=True),
+                ),
+                ("session_id", models.CharField(db_index=True, max_length=64)),
+                (
+                    "started_at",
+                    models.DateTimeField(help_text="When the recording started"),
+                ),
+                ("duration_seconds", models.IntegerField(default=0)),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[("completed", "Completed"), ("failed", "Failed")],
+                        max_length=16,
+                    ),
+                ),
+                ("transcript", models.TextField(blank=True, null=True)),
+                ("structured_data", models.JSONField(blank=True, null=True)),
+                ("error", models.TextField(blank=True, null=True)),
+                (
+                    "audio_file",
+                    models.FileField(
+                        blank=True,
+                        help_text="Recording uploaded by the client after the session ends",
+                        null=True,
+                        upload_to="filly_history/%Y/%m/",
+                    ),
+                ),
+                (
+                    "audio_mime_type",
+                    models.CharField(blank=True, max_length=64, null=True),
+                ),
+                (
+                    "deleted",
+                    models.BooleanField(
+                        db_index=True,
+                        default=False,
+                        help_text="Soft-deleted entries are hidden from the user but kept "
+                        "(row + audio) for audit",
+                    ),
+                ),
+                ("deleted_date", models.DateTimeField(blank=True, null=True)),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="filly_history",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+            ],
+            options={
+                "verbose_name": "Filly History",
+                "verbose_name_plural": "Filly Histories",
+                "ordering": ["-started_at"],
+            },
+        ),
+        migrations.AddConstraint(
+            model_name="fillyquota",
+            constraint=models.UniqueConstraint(
+                condition=models.Q(("user__isnull", True)),
+                fields=("facility_external_id",),
+                name="unique_facility_filly_quota",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="fillyquota",
+            constraint=models.UniqueConstraint(
+                fields=("user", "facility_external_id"),
+                name="unique_user_facility_filly_quota",
+            ),
+        ),
+    ]
