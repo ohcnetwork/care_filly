@@ -8,7 +8,7 @@ list or delete another user's history.
 - GET    v1/history                          -> {count, results} (newest first)
 - DELETE v1/history                          -> clear the user's entire history
 - DELETE v1/history/<external_id>            -> delete one entry
-- GET    v1/history/<external_id>/audio      -> stream the recording
+- GET    v1/history/<external_id>/audio      -> redirect to a signed recording URL
 - POST   v1/history/session/<session_id>/audio -> attach the client's recording
 """
 
@@ -18,8 +18,12 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from django.core.files.base import ContentFile
-from django.http import FileResponse, HttpRequest, HttpResponse, JsonResponse
+from django.http import (
+    HttpRequest,
+    HttpResponse,
+    HttpResponseRedirect,
+    JsonResponse,
+)
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -93,7 +97,7 @@ def _history_dict(entry: FillyHistory) -> dict:
         "transcript": entry.transcript,
         "structured_data": entry.structured_data,
         "error": entry.error,
-        "has_audio": bool(entry.audio_file),
+        "has_audio": entry.has_audio(),
         "audio_mime_type": entry.audio_mime_type,
     }
 
@@ -107,12 +111,14 @@ def history_collection(request: HttpRequest) -> JsonResponse:
 
     if request.method == "DELETE":
         # Soft delete — rows and audio are kept for audit, just hidden.
-        deleted = FillyHistory.objects.filter(user=user, deleted=False).update(
-            deleted=True, deleted_date=timezone.now()
+        # `objects` already excludes deleted rows, so this only ever
+        # touches the user's still-visible entries.
+        deleted = FillyHistory.objects.filter(user=user).update(
+            deleted=True, modified_date=timezone.now()
         )
         return JsonResponse({"deleted": deleted})
 
-    qs = FillyHistory.objects.filter(user=user, deleted=False).order_by("-started_at")
+    qs = FillyHistory.objects.filter(user=user).order_by("-started_at")
     try:
         limit = min(int(request.GET.get("limit", DEFAULT_PAGE_SIZE)), MAX_PAGE_SIZE)
         offset = max(int(request.GET.get("offset", 0)), 0)
@@ -135,7 +141,7 @@ def history_detail(request: HttpRequest, external_id: str) -> JsonResponse:
     entry = _get_entry(user, external_id)
     if entry is None:
         return _entry_not_found()
-    entry.soft_delete()  # row and audio are kept for audit
+    entry.delete()  # soft delete — row and audio are kept for audit
     return JsonResponse({"deleted": 1})
 
 
@@ -143,9 +149,7 @@ def _get_entry(user, external_id: str) -> Optional[FillyHistory]:
     entry_uuid = parse_facility_id(external_id)  # generic "parse UUID or None"
     if entry_uuid is None:
         return None
-    return FillyHistory.objects.filter(
-        user=user, external_id=entry_uuid, deleted=False
-    ).first()
+    return FillyHistory.objects.filter(user=user, external_id=entry_uuid).first()
 
 
 def _entry_not_found() -> JsonResponse:
@@ -158,17 +162,18 @@ def _entry_not_found() -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["GET"])
 def history_audio(request: HttpRequest, external_id: str) -> HttpResponse:
-    """Stream the stored recording of one of the user's own entries."""
+    """Redirect to a short-lived signed URL for the user's own recording.
+
+    The audio itself lives in object storage (Minio/S3) — the app server
+    never proxies the bytes, same as CARE's own file uploads.
+    """
     err, user = _require_user(request)
     if err:
         return err
     entry = _get_entry(user, external_id)
-    if entry is None or not entry.audio_file:
+    if entry is None or not entry.has_audio():
         return _entry_not_found()
-    return FileResponse(
-        entry.audio_file.open("rb"),
-        content_type=entry.audio_mime_type or "application/octet-stream",
-    )
+    return HttpResponseRedirect(entry.read_audio_url())
 
 
 @csrf_exempt
@@ -204,14 +209,8 @@ def upload_history_audio(request: HttpRequest, session_id: str) -> JsonResponse:
         return _entry_not_found()
 
     mime = file.content_type or "audio/webm"
-    ext = "m4a" if "mp4" in mime else "webm"
-    if entry.audio_file:
-        entry.audio_file.delete(save=False)
-    entry.audio_file.save(
-        f"{entry.external_id}.{ext}", ContentFile(file.read()), save=False
-    )
-    entry.audio_mime_type = mime
-    update_fields = ["audio_file", "audio_mime_type"]
+    entry.save_audio(file.read(), mime)  # uploads to object storage
+    update_fields = ["internal_name", "audio_mime_type", "meta"]
 
     try:
         duration = int(float(request.POST.get("duration", "")))

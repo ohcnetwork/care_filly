@@ -21,18 +21,15 @@ rows = FillyHistory.objects.filter(user=user, session_id="smoketest123").order_b
 )
 print("rows:", rows.count())
 
-# Attach + read back audio the way upload_history_audio does.
-from django.core.files.base import ContentFile
-
+# Attach + read back audio the way upload_history_audio does (object storage,
+# e.g. Minio locally — requires a bucket to be configured, no local fallback).
 entry = rows.filter(status="completed").first()
-entry.audio_file.save(f"{entry.external_id}.webm", ContentFile(b"fake-webm-bytes"))
-entry.audio_mime_type = "audio/webm"
-entry.save(update_fields=["audio_mime_type"])
+entry.save_audio(b"fake-webm-bytes", "audio/webm")
+entry.save(update_fields=["internal_name", "audio_mime_type", "meta"])
 entry.refresh_from_db()
 print("has_audio:", _history_dict(entry)["has_audio"], entry.audio_mime_type)
-with entry.audio_file.open("rb") as f:
-    print("audio bytes:", f.read())
-storage, name = entry.audio_file.storage, entry.audio_file.name
+print("signed read url:", entry.read_audio_url())
+internal_name = entry.internal_name
 
 for r in rows:
     print(_history_dict(r))
@@ -41,6 +38,8 @@ print(
     FillyHistory.objects.exclude(user=user).filter(session_id="smoketest123").count(),
 )
 for r in rows:
-    r.delete()  # model.delete removes the stored file
-print("file removed from storage:", not storage.exists(name))
+    r.purge()  # hard delete + removes the stored recording from the bucket
+print(
+    "row purged:", not FillyHistory.objects.filter(internal_name=internal_name).exists()
+)
 print("cleaned up")
