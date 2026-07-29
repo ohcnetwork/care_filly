@@ -1,29 +1,25 @@
-"""Quota & usage models (mirrors 10bedicu/care_scribe's ScribeQuota system).
+"""Quota & usage models (EMR-style, with real facility/user FKs).
 
-Two kinds of FillyQuota rows per facility:
-- facility-level (user=None): `tokens` is the facility's monthly pool and
-  `tokens_per_user` is the allowance copied to each user row on TnC accept.
-- user-level (user set): `tokens` is that user's monthly allowance.
+Two kinds of ``FillyQuota`` rows per facility:
+- facility-level (``user`` is null): ``tokens`` is the facility's monthly
+  pool and ``tokens_per_user`` is the allowance copied to each user row on
+  TnC accept.
+- user-level (``user`` set): ``tokens`` is that user's monthly allowance.
 
-Usage is NEVER stored as a counter on the quota. Each completed scribe
-session writes one immutable FillyUsage row and monthly consumption is
-aggregated live for the current calendar month (avoids the stale
-month-boundary bug in the reference implementation).
-
-Facilities are referenced by their CARE external UUID (no hard FK into
-CARE internals) so the plugin stays loosely coupled.
+Usage is NEVER stored as a counter on the quota. Each completed filly
+session writes one immutable ``FillyUsage`` row and monthly consumption
+is aggregated live for the current calendar month (avoids stale
+month-boundary bugs).
 """
 
-from __future__ import annotations
-
-import uuid
 from datetime import datetime
-from typing import Optional
 
 from django.conf import settings
 from django.db import models
 from django.db.models import Q, Sum
 from django.utils import timezone
+
+from care.emr.models.base import EMRBaseModel
 
 
 def month_window() -> tuple[datetime, datetime]:
@@ -37,11 +33,7 @@ def month_window() -> tuple[datetime, datetime]:
     return start, end
 
 
-class FillyQuota(models.Model):
-    external_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    created_date = models.DateTimeField(auto_now_add=True, db_index=True)
-    modified_date = models.DateTimeField(auto_now=True)
-
+class FillyQuota(EMRBaseModel):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -50,7 +42,11 @@ class FillyQuota(models.Model):
         blank=True,
         help_text="Null for the facility-level quota row",
     )
-    facility_external_id = models.UUIDField(db_index=True)
+    facility = models.ForeignKey(
+        "facility.Facility",
+        on_delete=models.CASCADE,
+        related_name="filly_quotas",
+    )
     tokens = models.IntegerField(
         default=0,
         help_text="Monthly token pool (facility row) or allowance (user row)",
@@ -59,58 +55,49 @@ class FillyQuota(models.Model):
         default=0,
         help_text="Allowance copied to each user quota (facility rows only)",
     )
-    allow_scribe = models.BooleanField(
+    allow_filly = models.BooleanField(
         default=True,
-        help_text="Whether scribe is enabled for this user/facility",
+        help_text="Whether filly is enabled for this user/facility",
     )
-    tnc_hash = models.CharField(
-        max_length=255,
-        null=True,
-        blank=True,
-        help_text="Hash of the terms and conditions accepted by the user",
-    )
+    tnc_hash = models.CharField(max_length=255, null=True, blank=True)
     tnc_accepted_date = models.DateTimeField(null=True, blank=True)
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        related_name="created_filly_quotas",
-        null=True,
-        blank=True,
-    )
 
     class Meta:
         verbose_name = "Filly Quota"
         verbose_name_plural = "Filly Quotas"
         constraints = [
             models.UniqueConstraint(
-                fields=["facility_external_id"],
-                condition=Q(user__isnull=True),
-                name="unique_facility_filly_quota",
+                fields=["facility"],
+                condition=Q(user__isnull=True, deleted=False),
+                name="care_filly_unique_facility_quota",
             ),
             models.UniqueConstraint(
-                fields=["user", "facility_external_id"],
-                name="unique_user_facility_filly_quota",
+                fields=["user", "facility"],
+                condition=Q(deleted=False),
+                name="care_filly_unique_user_facility_quota",
             ),
         ]
 
     @property
     def used(self) -> int:
         """Tokens consumed in the current calendar month (computed live)."""
-        return used_tokens(self.facility_external_id, self.user_id)
+        return used_tokens(self.facility_id, self.user_id)
 
     def __str__(self) -> str:
-        who = (
-            self.user.username if self.user else f"facility:{self.facility_external_id}"
-        )
+        who = self.user.username if self.user else f"facility:{self.facility_id}"
         return f"{who} - {self.tokens} tokens"
 
 
-class FillyUsage(models.Model):
-    """One immutable row per completed scribe session."""
+class FillyUsage(EMRBaseModel):
+    """One immutable row per completed filly session."""
 
-    external_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    created_date = models.DateTimeField(auto_now_add=True, db_index=True)
-
+    session = models.ForeignKey(
+        "care_filly.FillySession",
+        on_delete=models.SET_NULL,
+        related_name="usages",
+        null=True,
+        blank=True,
+    )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -118,8 +105,11 @@ class FillyUsage(models.Model):
         null=True,
         blank=True,
     )
-    facility_external_id = models.UUIDField(db_index=True, null=True, blank=True)
-    session_id = models.CharField(max_length=64, db_index=True)
+    facility = models.ForeignKey(
+        "facility.Facility",
+        on_delete=models.CASCADE,
+        related_name="filly_usages",
+    )
     input_tokens = models.IntegerField(default=0)
     output_tokens = models.IntegerField(default=0)
     audio_seconds = models.IntegerField(
@@ -138,11 +128,11 @@ class FillyUsage(models.Model):
         return f"{self.session_id}: {self.total_tokens} tokens"
 
 
-def used_tokens(facility_external_id, user_id: Optional[int] = None) -> int:
+def used_tokens(facility_id, user_id: int | None = None) -> int:
     """Current-month token consumption for a facility or a user in it."""
     start, end = month_window()
     qs = FillyUsage.objects.filter(
-        facility_external_id=facility_external_id,
+        facility_id=facility_id,
         created_date__gte=start,
         created_date__lt=end,
     )

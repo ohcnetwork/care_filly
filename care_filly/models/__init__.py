@@ -1,12 +1,20 @@
-from .history import FillyHistory
+from .preference import FillyUserPreference
 from .quota import FillyQuota, FillyUsage, month_window, used_tokens
-from .user_preference import FillyUserPreference
+from .session import (
+    HISTORY_STATUSES,
+    UPLOADABLE_STATUSES,
+    FillySession,
+    SessionStatus,
+)
 
 __all__ = [
-    "FillyHistory",
+    "HISTORY_STATUSES",
+    "UPLOADABLE_STATUSES",
     "FillyQuota",
+    "FillySession",
     "FillyUsage",
     "FillyUserPreference",
+    "SessionStatus",
     "month_window",
     "used_tokens",
 ]

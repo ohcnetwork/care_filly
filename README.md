@@ -1,6 +1,6 @@
 # care_filly
 
-Self-hosted, MedScribe Alliance protocol compatible scribe backend for
+Self-hosted backend for
 [`care_filly_fe`](https://github.com/ohcnetwork/care_filly_fe) — the CARE frontend
 module that records clinician dictation and turns it into structured form-fill
 data with **chunked, near-realtime transcription** (transcript ready ~1–2s after
@@ -9,7 +9,7 @@ the recording stops, structured JSON a few seconds later).
 **`care_filly`** is a Django app plugged into [CARE](https://github.com/ohcnetwork/care)
 via `plugs.manager.PlugManager`, mounted at `/api/care_filly/`. It reuses CARE's own
 auth, adds per-facility/per-user quota enforcement, terms-and-conditions gating, and
-persists scribe session history.
+persists Filly session history.
 
 This plugin follows the structure of
 [ohcnetwork/care_hello](https://github.com/ohcnetwork/care_hello), the CARE
@@ -41,8 +41,8 @@ care_filly_plug = Plug(
     package_name="care_filly",
     version="",
     configs={
-        "GROQ_API_KEY": "...",
-        "SARVAM_API_KEY": "...",
+        "ASR_API_KEY": "...",
+        "LLM_API_KEY": "...",
     },
 )
 
@@ -64,21 +64,20 @@ provider accounts).
 ### Frontend wiring
 
 The frontend talks to the plugin at `/api/care_filly/` on the CARE API origin
-(no extra configuration needed — leave `REACT_SCRIBE_BE_URL` unset).
+(derived from `window.CARE_API_URL` — no extra configuration needed).
 
-## Protocol endpoints (MedScribe Alliance v0.1)
+## Endpoints
 
 Mounted at `/api/care_filly/v1/...`:
 
 | Method | Path                                       | Purpose                                                         |
 | ------ | ------------------------------------------ | --------------------------------------------------------------- |
-| GET    | `/v1/.well-known/medscribealliance`        | Discovery document                                              |
 | POST   | `/v1/sessions`                             | Create session                                                  |
-| POST   | `/v1/upload/{session_id}/{filename}`       | Chunk upload (`audio_N.mp3`) — transcription starts immediately |
-| POST   | `/v1/sessions/{id}/end`                    | End recording → assemble transcript, run extraction             |
-| GET    | `/v1/sessions/{id}`                        | Status poll (transcript appears before templates finish)        |
-| PATCH  | `/v1/sessions/{id}`                        | Update session metadata                                         |
-| POST   | `/v1/sessions/{id}/process/template/{tid}` | Re-run extraction                                               |
+| GET    | `/v1/sessions/{session_id}`                | Status poll (transcript appears before templates finish)        |
+| POST   | `/v1/sessions/{session_id}/chunks`         | Chunk upload (`audio_N.mp3`) — transcription starts immediately |
+| POST   | `/v1/sessions/{session_id}/end`            | End recording → assemble transcript, run extraction             |
+| POST   | `/v1/sessions/{session_id}/process/template/{template_id}` | Re-run extraction                               |
+| GET    | `/healthz`                                 | Health check                                                    |
 
 The CARE-plugin mode additionally exposes quota and history management:
 
@@ -86,10 +85,10 @@ The CARE-plugin mode additionally exposes quota and history management:
 | ---------------- | ------------------------------------------ | -------------------------------------------------- |
 | GET               | `/v1/quota/my`                            | Current user's quota + usage for a facility        |
 | POST              | `/v1/quota/accept-tnc`                    | Accept the terms & conditions                      |
-| GET               | `/v1/preferences/scribe`                  | Get/set the user's per-user scribe opt-in          |
+| GET/PUT           | `/v1/preferences/filly`                   | Get/set the user's per-user Filly opt-in           |
 | GET/POST          | `/v1/quota`                               | List/create facility or user quotas (admin)        |
 | GET/PATCH/DELETE  | `/v1/quota/{external_id}`                 | Manage a single quota row (admin)                  |
-| GET               | `/v1/history`                             | List the current user's past scribe sessions       |
+| GET               | `/v1/history`                             | List the current user's past Filly sessions        |
 | GET/DELETE        | `/v1/history/{external_id}`               | Fetch/soft-delete a history entry                  |
 | GET               | `/v1/history/{external_id}/audio`         | Download the recorded audio for a history entry    |
 | POST              | `/v1/history/session/{session_id}/audio`  | Upload the recording once a session ends           |
@@ -98,16 +97,15 @@ The CARE-plugin mode additionally exposes quota and history management:
 
 | Variable            | Default                   | Purpose                                                                                                     |
 | ------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `GROQ_API_KEY`      | —                         | Required (ASR + default LLM)                                                                                |
-| `LLM_PROVIDER`      | `groq`                    | `groq` or `openai`                                                                                          |
-| `OPENAI_API_KEY`    | —                         | Only if `LLM_PROVIDER=openai`                                                                               |
-| `ASR_PROVIDER`       | `sarvam`                  | `sarvam` (best for Indian languages) or `groq` (Whisper)                  |
-| `SARVAM_API_KEY`     | —                         | Required when `ASR_PROVIDER=sarvam`                                       |
-| `SARVAM_ASR_MODEL`   | `saaras:v3`               | `saaras:v3` (recommended) or `saarika:v2.5`                               |
+| `LLM_PROVIDER`      | `openai_compat`           | OpenAI-compatible LLM backend                                                                              |
+| `ASR_PROVIDER`       | `sarvam`                  | `sarvam` (best for Indian languages) or `openai_compat` (Whisper)         |
+| `ASR_API_KEY`        | —                         | Required (speech-to-text) for the active `ASR_PROVIDER`                   |
+| `ASR_BASE_URL`       | `https://api.sarvam.ai`   | ASR vendor base URL (set to the OpenAI-compatible base for `openai_compat`) |
+| `ASR_MODEL`          | `saaras:v3`               | `saaras:v3` / `saarika:v2.5` (Sarvam) or `whisper-large-v3-turbo` (Whisper) |
 | `SARVAM_ASR_MODE`    | `translate`               | `translate` (English output) or `transcribe` (original script)           |
-| `GROQ_ASR_MODEL`    | `whisper-large-v3-turbo`  | ASR model when using Groq                                                    |
-| `GROQ_LLM_MODEL`    | `llama-3.3-70b-versatile` | Extraction model                                                                                            |
-| `OPENAI_LLM_MODEL`  | `gpt-4o-mini`             | Extraction model (OpenAI)                                                                                   |
+| `LLM_API_KEY`        | —                         | Required (structured extraction)                                          |
+| `LLM_BASE_URL`       | `https://api.groq.com/openai/v1` | OpenAI-compatible LLM base URL                                     |
+| `LLM_MODEL`         | `llama-3.3-70b-versatile` | Extraction model                                                                                            |
 | `FILLY_AUTH_TOKEN` | —                         | Optional static bearer token accepted instead of a CARE JWT (testing)  |
 | `FILLY_MOCK`       | `0`                       | `1` = fake ASR/LLM, no keys needed                                                                          |
-| `FILLY_TNC`        | (built-in text)           | Terms & conditions shown before a user's first scribe session               |
+| `FILLY_TNC`        | (built-in text)           | Terms & conditions shown before a user's first Filly session               |
