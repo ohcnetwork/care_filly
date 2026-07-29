@@ -1,4 +1,4 @@
-"""User-scoped scribe history: recording + endpoints.
+"""User-scoped scribe history (CARE EMR viewset pattern).
 
 History rows are written server-side when a session finalizes, so a
 user's past sessions follow them across browsers and devices. Every
@@ -16,25 +16,25 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Optional
 
-from django.http import (
-    HttpRequest,
-    HttpResponse,
-    HttpResponseRedirect,
-    JsonResponse,
-)
+from django.http import HttpResponseRedirect
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from rest_framework.response import Response
 
+from care.emr.api.viewsets.base import (
+    EMRBaseViewSet,
+    EMRDestroyMixin,
+    EMRListMixin,
+)
+from care.utils.pagination.care_pagination import CareLimitOffsetPagination
+from care_filly.api.exceptions import FillyAPIError, filly_exception_handler
 from care_filly.models import FillyHistory
 from care_filly.quota import parse_facility_id
+from care_filly.resources.history import FillyHistoryReadSpec
 
 logger = logging.getLogger("care_filly")
 
-MAX_PAGE_SIZE = 100
-DEFAULT_PAGE_SIZE = 50
 MAX_AUDIO_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
@@ -42,8 +42,8 @@ def record_history(
     session: dict,
     status: str,
     transcript: str,
-    structured_data: Optional[dict],
-    error: Optional[str] = None,
+    structured_data: dict | None,
+    error: str | None = None,
 ) -> None:
     """Persist a FillyHistory row for a finalized session.
 
@@ -72,153 +72,92 @@ def record_history(
             structured_data=structured_data or None,
             error=error,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception(
             "failed to record history for session %s", session["session_id"]
         )
 
 
-def _require_user(request: HttpRequest):
-    from care_filly.api.viewsets.quota import _require_user as require_user
-
-    return require_user(request)
-
-
-def _history_dict(entry: FillyHistory) -> dict:
-    return {
-        "id": str(entry.external_id),
-        "session_id": entry.session_id,
-        "facility_external_id": str(entry.facility_external_id)
-        if entry.facility_external_id
-        else None,
-        "started_at": entry.started_at.isoformat(),
-        "duration_seconds": entry.duration_seconds,
-        "status": entry.status,
-        "transcript": entry.transcript,
-        "structured_data": entry.structured_data,
-        "error": entry.error,
-        "has_audio": entry.has_audio(),
-        "audio_mime_type": entry.audio_mime_type,
-    }
+class FillyHistoryPagination(CareLimitOffsetPagination):
+    default_limit = 50
+    max_limit = 100
 
 
-@csrf_exempt
-@require_http_methods(["GET", "DELETE"])
-def history_collection(request: HttpRequest) -> JsonResponse:
-    err, user = _require_user(request)
-    if err:
-        return err
+class FillyHistoryViewSet(EMRListMixin, EMRDestroyMixin, EMRBaseViewSet):
+    database_model = FillyHistory
+    pydantic_read_model = FillyHistoryReadSpec
+    pagination_class = FillyHistoryPagination
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
 
-    if request.method == "DELETE":
-        # Soft delete — rows and audio are kept for audit, just hidden.
-        # `objects` already excludes deleted rows, so this only ever
-        # touches the user's still-visible entries.
-        deleted = FillyHistory.objects.filter(user=user).update(
-            deleted=True, modified_date=timezone.now()
-        )
-        return JsonResponse({"deleted": deleted})
+    def get_exception_handler(self):
+        return filly_exception_handler
 
-    qs = FillyHistory.objects.filter(user=user).order_by("-started_at")
-    try:
-        limit = min(int(request.GET.get("limit", DEFAULT_PAGE_SIZE)), MAX_PAGE_SIZE)
-        offset = max(int(request.GET.get("offset", 0)), 0)
-    except ValueError:
-        limit, offset = DEFAULT_PAGE_SIZE, 0
-    return JsonResponse(
-        {
-            "count": qs.count(),
-            "results": [_history_dict(e) for e in qs[offset : offset + limit]],
-        }
-    )
-
-
-@csrf_exempt
-@require_http_methods(["DELETE"])
-def history_detail(request: HttpRequest, external_id: str) -> JsonResponse:
-    err, user = _require_user(request)
-    if err:
-        return err
-    entry = _get_entry(user, external_id)
-    if entry is None:
-        return _entry_not_found()
-    entry.delete()  # soft delete — row and audio are kept for audit
-    return JsonResponse({"deleted": 1})
-
-
-def _get_entry(user, external_id: str) -> Optional[FillyHistory]:
-    entry_uuid = parse_facility_id(external_id)  # generic "parse UUID or None"
-    if entry_uuid is None:
-        return None
-    return FillyHistory.objects.filter(user=user, external_id=entry_uuid).first()
-
-
-def _entry_not_found() -> JsonResponse:
-    return JsonResponse(
-        {"error": {"code": "not_found", "message": "History entry not found"}},
-        status=404,
-    )
-
-
-@csrf_exempt
-@require_http_methods(["GET"])
-def history_audio(request: HttpRequest, external_id: str) -> HttpResponse:
-    """Redirect to a short-lived signed URL for the user's own recording.
-
-    The audio itself lives in object storage (Minio/S3) — the app server
-    never proxies the bytes, same as CARE's own file uploads.
-    """
-    err, user = _require_user(request)
-    if err:
-        return err
-    entry = _get_entry(user, external_id)
-    if entry is None or not entry.has_audio():
-        return _entry_not_found()
-    return HttpResponseRedirect(entry.read_audio_url())
-
-
-@csrf_exempt
-@require_http_methods(["POST"])
-def upload_history_audio(request: HttpRequest, session_id: str) -> JsonResponse:
-    """Attach the client's locally captured recording to its history row.
-
-    Keyed by session_id (the client never sees the row's external_id
-    before listing). Only the row's owner can attach audio.
-    """
-    err, user = _require_user(request)
-    if err:
-        return err
-
-    file = request.FILES.get("file")
-    if file is None:
-        return JsonResponse(
-            {"error": {"code": "missing_file", "message": "No audio file"}},
-            status=400,
-        )
-    if file.size > MAX_AUDIO_BYTES:
-        return JsonResponse(
-            {"error": {"code": "too_large", "message": "Audio file too large"}},
-            status=413,
+    def get_queryset(self):
+        # Strictly the requesting user's own rows; soft-deleted rows are
+        # already excluded by the default manager.
+        return FillyHistory.objects.filter(user=self.request.user).order_by(
+            "-started_at"
         )
 
-    entry = (
-        FillyHistory.objects.filter(user=user, session_id=session_id)
-        .order_by("-created_date")
-        .first()
-    )
-    if entry is None:
-        return _entry_not_found()
+    def get_object(self):
+        entry_uuid = parse_facility_id(self.kwargs[self.lookup_field])
+        entry = (
+            self.get_queryset().filter(external_id=entry_uuid).first()
+            if entry_uuid
+            else None
+        )
+        if entry is None:
+            raise FillyAPIError("not_found", "History entry not found", 404)
+        return entry
 
-    mime = file.content_type or "audio/webm"
-    entry.save_audio(file.read(), mime)  # uploads to object storage
-    update_fields = ["internal_name", "audio_mime_type", "meta"]
+    def clear(self, request):
+        """Soft delete the user's entire history (rows/audio kept for audit)."""
+        deleted = self.get_queryset().update(deleted=True, modified_date=timezone.now())
+        return Response({"deleted": deleted})
 
-    try:
-        duration = int(float(request.POST.get("duration", "")))
-        if duration > 0:
-            entry.duration_seconds = duration
-            update_fields.append("duration_seconds")
-    except ValueError:
-        pass
+    def audio(self, request, external_id: str):
+        """Redirect to a short-lived signed URL for the user's own recording.
 
-    entry.save(update_fields=update_fields)
-    return JsonResponse({"id": str(entry.external_id), "has_audio": True})
+        The audio itself lives in object storage (Minio/S3) — the app
+        server never proxies the bytes, same as CARE's own file uploads.
+        """
+        entry = self.get_object()
+        if not entry.has_audio():
+            raise FillyAPIError("not_found", "History entry not found", 404)
+        return HttpResponseRedirect(entry.read_audio_url())
+
+    def upload_audio(self, request, session_id: str):
+        """Attach the client's locally captured recording to its history row.
+
+        Keyed by session_id (the client never sees the row's external_id
+        before listing). Only the row's owner can attach audio.
+        """
+        file = request.FILES.get("file")
+        if file is None:
+            raise FillyAPIError("missing_file", "No audio file")
+        if file.size > MAX_AUDIO_BYTES:
+            raise FillyAPIError("too_large", "Audio file too large", 413)
+
+        entry = (
+            self.get_queryset()
+            .filter(session_id=session_id)
+            .order_by("-created_date")
+            .first()
+        )
+        if entry is None:
+            raise FillyAPIError("not_found", "History entry not found", 404)
+
+        mime = file.content_type or "audio/webm"
+        entry.save_audio(file.read(), mime)  # uploads to object storage
+        update_fields = ["internal_name", "audio_mime_type", "meta"]
+
+        try:
+            duration = int(float(request.data.get("duration", "")))
+            if duration > 0:
+                entry.duration_seconds = duration
+                update_fields.append("duration_seconds")
+        except ValueError:
+            pass
+
+        entry.save(update_fields=update_fields)
+        return Response({"id": str(entry.external_id), "has_audio": True})

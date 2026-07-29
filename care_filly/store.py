@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from django.core.cache import cache
 
@@ -16,7 +16,7 @@ _LOCK_TTL = 5
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _skey(sid: str) -> str:
@@ -31,13 +31,13 @@ def _lkey(sid: str) -> str:
     return f"filly:lock:{sid}"
 
 
-def parse_chunk_index(filename: str) -> Optional[int]:
+def parse_chunk_index(filename: str) -> int | None:
     match = _CHUNK_RE.search(filename)
     return int(match.group(1)) if match else None
 
 
 def create_session(session_id: str, **fields: Any) -> dict:
-    created = datetime.now(timezone.utc)
+    created = datetime.now(UTC)
     session = {
         "session_id": session_id,
         "status": "created",
@@ -59,7 +59,7 @@ def create_session(session_id: str, **fields: Any) -> dict:
     return session
 
 
-def get_session(session_id: str) -> Optional[dict]:
+def get_session(session_id: str) -> dict | None:
     return cache.get(_skey(session_id))
 
 
@@ -67,9 +67,9 @@ def save_session(session: dict) -> None:
     cache.set(_skey(session["session_id"]), session, SESSION_TTL_SECONDS)
 
 
-def update_session(session_id: str, **updates: Any) -> Optional[dict]:
+def update_session(session_id: str, **updates: Any) -> dict | None:
     """Read-modify-write under a short cache lock to avoid clobbering."""
-    with session_lock(session_id):
+    with SessionLock(session_id):
         session = get_session(session_id)
         if session is None:
             return None
@@ -78,7 +78,7 @@ def update_session(session_id: str, **updates: Any) -> Optional[dict]:
         return session
 
 
-class session_lock:
+class SessionLock:
     def __init__(self, session_id: str) -> None:
         self.key = _lkey(session_id)
 
@@ -99,7 +99,7 @@ def register_chunk(session_id: str, idx: int, filename: str) -> None:
         {"file": filename, "text": None, "error": None},
         SESSION_TTL_SECONDS,
     )
-    with session_lock(session_id):
+    with SessionLock(session_id):
         session = get_session(session_id)
         if session is None:
             return
@@ -111,7 +111,7 @@ def register_chunk(session_id: str, idx: int, filename: str) -> None:
 
 
 def set_chunk_result(
-    session_id: str, idx: int, text: Optional[str], error: Optional[str] = None
+    session_id: str, idx: int, text: str | None, error: str | None = None
 ) -> None:
     chunk = cache.get(_ckey(session_id, idx)) or {"file": f"audio_{idx}.mp3"}
     chunk["text"] = text if text is not None else ""

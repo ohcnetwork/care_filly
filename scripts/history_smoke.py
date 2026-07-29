@@ -1,9 +1,14 @@
 """Smoke test for user-scoped scribe history (run via manage.py shell)."""
 
+from care_filly.api.viewsets.history import record_history
+from care_filly.models import FillyHistory
+from care_filly.resources.history import FillyHistoryReadSpec
 from django.contrib.auth import get_user_model
 
-from care_filly.api.viewsets.history import _history_dict, record_history
-from care_filly.models import FillyHistory
+
+def _history_dict(entry):
+    return FillyHistoryReadSpec.serialize(entry).to_json()
+
 
 user = get_user_model().objects.first()
 session = {

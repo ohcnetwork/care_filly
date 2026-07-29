@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from .models import FillyQuota, FillyUsage, FillyUserPreference, used_tokens
 from .settings import plugin_settings
@@ -27,14 +27,14 @@ def current_tnc() -> tuple[str, str]:
     return tnc, hash_string(tnc)
 
 
-def parse_facility_id(value: Any) -> Optional[uuid.UUID]:
+def parse_facility_id(value: Any) -> uuid.UUID | None:
     try:
         return uuid.UUID(str(value))
     except (ValueError, TypeError, AttributeError):
         return None
 
 
-def check_can_scribe(user, facility_id: Any) -> Optional[dict]:
+def check_can_scribe(user, facility_id: Any) -> dict | None:  # noqa: PLR0911
     """Return an error dict {code, message} if the user may not scribe."""
     facility_uuid = parse_facility_id(facility_id)
     if facility_uuid is None:
@@ -96,7 +96,7 @@ def check_can_scribe(user, facility_id: Any) -> Optional[dict]:
     return None
 
 
-def record_usage(session: dict, usage: Optional[dict]) -> Optional[dict]:
+def record_usage(session: dict, usage: dict | None) -> dict | None:
     """Persist a FillyUsage row for a finalized session.
 
     Returns the usage summary stored on the session (or None when there is
@@ -119,7 +119,7 @@ def record_usage(session: dict, usage: Optional[dict]) -> Optional[dict]:
             output_tokens=output_tokens,
             audio_seconds=audio_seconds,
         )
-    except Exception:  # noqa: BLE001 — usage must never break finalize
+    except Exception:
         logger.exception("failed to record usage for session %s", session["session_id"])
         return None
     return {

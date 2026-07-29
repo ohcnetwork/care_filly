@@ -23,11 +23,13 @@ this backend:   record ─ transcribe chunks as they upload ─┤stop├─ las
 ```
 
 - Audio chunks (≤20s each) upload during recording; each is transcribed immediately
-  (Sarvam AI by default, or Groq `whisper-large-v3-turbo`).
+  by the configured ASR provider (Sarvam AI by default; any OpenAI-compatible
+  Whisper endpoint works too).
 - On stop, only the final chunk remains → transcript assembled almost instantly.
-- One LLM call (Groq `llama-3.3-70b-versatile` JSON mode by default, or OpenAI)
-  converts the transcript into form-fill JSON using the questionnaire schema the
-  frontend sends per-session in `additional_data`.
+- One JSON-mode LLM call (any OpenAI-compatible chat-completions endpoint —
+  Groq `llama-3.3-70b-versatile` by default) converts the transcript into
+  form-fill JSON using the questionnaire schema the frontend sends per-session
+  in `additional_data`.
 
 ## Running as a CARE plugin (primary mode)
 
@@ -41,8 +43,8 @@ care_filly_plug = Plug(
     package_name="care_filly",
     version="",
     configs={
-        "GROQ_API_KEY": "...",
-        "SARVAM_API_KEY": "...",
+        "ASR_API_KEY": "...",
+        "LLM_API_KEY": "...",
     },
 )
 
@@ -51,7 +53,7 @@ plugs = [care_filly_plug]
 
 Then `pip install -e .` this repo into CARE's environment (or add it to
 `plugs.txt` / your Docker build if installing from a git remote). All settings
-in `care_filly/plugin_settings.py` can be overridden via `PLUGIN_CONFIGS` or
+in `care_filly/settings.py` can be overridden via `PLUGIN_CONFIGS` or
 equivalent environment variables — see [Environment](#environment) below.
 
 CARE's own JWT auth is used to authenticate requests — the frontend just sends
@@ -96,18 +98,24 @@ The CARE-plugin mode additionally exposes quota and history management:
 
 ## Environment
 
-| Variable            | Default                   | Purpose                                                                                                     |
-| ------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `GROQ_API_KEY`      | —                         | Required (ASR + default LLM)                                                                                |
-| `LLM_PROVIDER`      | `groq`                    | `groq` or `openai`                                                                                          |
-| `OPENAI_API_KEY`    | —                         | Only if `LLM_PROVIDER=openai`                                                                               |
-| `ASR_PROVIDER`       | `sarvam`                  | `sarvam` (best for Indian languages) or `groq` (Whisper)                  |
-| `SARVAM_API_KEY`     | —                         | Required when `ASR_PROVIDER=sarvam`                                       |
-| `SARVAM_ASR_MODEL`   | `saaras:v3`               | `saaras:v3` (recommended) or `saarika:v2.5`                               |
-| `SARVAM_ASR_MODE`    | `translate`               | `translate` (English output) or `transcribe` (original script)           |
-| `GROQ_ASR_MODEL`    | `whisper-large-v3-turbo`  | ASR model when using Groq                                                    |
-| `GROQ_LLM_MODEL`    | `llama-3.3-70b-versatile` | Extraction model                                                                                            |
-| `OPENAI_LLM_MODEL`  | `gpt-4o-mini`             | Extraction model (OpenAI)                                                                                   |
-| `FILLY_AUTH_TOKEN` | —                         | Optional static bearer token accepted instead of a CARE JWT (testing)  |
-| `FILLY_MOCK`       | `0`                       | `1` = fake ASR/LLM, no keys needed                                                                          |
-| `FILLY_TNC`        | (built-in text)           | Terms & conditions shown before a user's first scribe session               |
+AI providers are fully generic — no vendor is hardcoded. `ASR_PROVIDER` /
+`LLM_PROVIDER` accept a built-in adapter name (`sarvam`, `openai`) or a dotted
+class path to a custom adapter (see `care_filly/providers/`). The `openai`
+adapter works with any OpenAI-compatible API (OpenAI, Groq, Together, vLLM,
+LiteLLM, ...).
+
+| Variable           | Default                          | Purpose                                                                  |
+| ------------------ | -------------------------------- | ------------------------------------------------------------------------ |
+| `ASR_PROVIDER`     | `sarvam`                         | Speech-to-text adapter: `sarvam`, `openai`, or a dotted class path        |
+| `ASR_BASE_URL`     | `https://api.sarvam.ai`          | ASR API origin                                                            |
+| `ASR_API_KEY`      | —                                | ASR credential                                                            |
+| `ASR_MODEL`        | `saaras:v3`                      | ASR model identifier                                                      |
+| `ASR_OPTIONS`      | `{"mode": "translate"}`          | Provider extras (e.g. sarvam `mode`: `translate` / `transcribe`)          |
+| `LLM_PROVIDER`     | `openai`                         | Extraction adapter: `openai` or a dotted class path                       |
+| `LLM_BASE_URL`     | `https://api.groq.com/openai/v1` | Chat-completions API origin                                               |
+| `LLM_API_KEY`      | —                                | LLM credential                                                            |
+| `LLM_MODEL`        | `llama-3.3-70b-versatile`        | Extraction model                                                          |
+| `LLM_OPTIONS`      | `{}`                             | Extra JSON body fields for the completion request                         |
+| `FILLY_AUTH_TOKEN` | —                                | Optional static bearer token accepted instead of a CARE JWT (testing)     |
+| `FILLY_MOCK`       | `0`                              | `1` = fake ASR/LLM, no keys needed                                        |
+| `FILLY_TNC`        | (built-in text)                  | Terms & conditions shown before a user's first scribe session             |

@@ -1,22 +1,20 @@
-from __future__ import annotations
+"""Per-user scribe opt-in, set from the user's profile page."""
 
-import uuid
+from __future__ import annotations
 
 from django.conf import settings
 from django.db import models
 
+from care.emr.models.base import EMRBaseModel
 
-class FillyUserPreference(models.Model):
+
+class FillyUserPreference(EMRBaseModel):
     """Per-user opt-in for scribe, set from the user's profile page.
 
     Scribe UI is hidden until the user enables it; enabling requires
     accepting the current terms & conditions (hash stamped here). This is
     global per user — facility-level availability/quota still applies.
     """
-
-    external_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    created_date = models.DateTimeField(auto_now_add=True)
-    modified_date = models.DateTimeField(auto_now=True)
 
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,

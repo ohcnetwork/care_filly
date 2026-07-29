@@ -1,9 +1,9 @@
 import uuid
 
+from care_filly.models import FillyQuota, FillyUsage, used_tokens
 from django.contrib.auth import get_user_model
 
 from care_filly import quota as q
-from care_filly.models import FillyQuota, FillyUsage, used_tokens
 
 User = get_user_model()
 user = User.objects.first()

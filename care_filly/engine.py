@@ -1,25 +1,25 @@
-"""Sync ASR + LLM extraction clients (called from worker threads)."""
+"""Sync ASR + LLM extraction pipeline (called from worker threads).
+
+Provider-agnostic: the actual HTTP adapters live in
+``care_filly.providers`` and are selected purely from plugin settings
+(``ASR_PROVIDER`` / ``LLM_PROVIDER``) — nothing here knows about any
+specific vendor.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import re
-from typing import Any, Optional
+from typing import Any
 
-import requests
-
-from care_filly.settings import (
-    GROQ_BASE_URL,
-    OPENAI_BASE_URL,
-    SARVAM_BASE_URL,
-    mock_mode,
-    plugin_settings,
-)
+from care_filly.providers import get_asr_provider, get_llm_provider
+from care_filly.settings import mock_mode
 
 logger = logging.getLogger("care_filly")
 
-_WHISPER_LANGS = {
+# ISO-639-1 codes commonly accepted as transcription language hints.
+_ASR_LANGS = {
     "en",
     "hi",
     "gu",
@@ -54,76 +54,21 @@ FALLBACK_INSTRUCTIONS = (
 )
 
 
-def resolve_language(language_hint: list[str]) -> Optional[str]:
+def resolve_language(language_hint: list[str]) -> str | None:
     for hint in language_hint or []:
         if hint == "auto_detect":
             return None
         code = hint.split("-")[0].lower()
-        if code in _WHISPER_LANGS:
+        if code in _ASR_LANGS:
             return code
     return None
 
 
-# Languages Sarvam speech-to-text accepts as a BCP-47 hint (xx-IN)
-_SARVAM_LANGS = {"hi", "bn", "kn", "ml", "mr", "od", "pa", "ta", "te", "en", "gu"}
-
-
-def _transcribe_sarvam(audio: bytes, filename: str, language: Optional[str]) -> str:
-    api_key = plugin_settings.SARVAM_API_KEY
-    if not api_key:
-        raise RuntimeError("SARVAM_API_KEY is not configured (or set FILLY_MOCK=1)")
-
-    model = plugin_settings.SARVAM_ASR_MODEL
-    data = {
-        "model": model,
-        "language_code": (f"{language}-IN" if language in _SARVAM_LANGS else "unknown"),
-    }
-    if model.startswith("saaras"):
-        data["mode"] = plugin_settings.SARVAM_ASR_MODE
-
-    response = requests.post(
-        f"{SARVAM_BASE_URL}/speech-to-text",
-        headers={"api-subscription-key": api_key},
-        data=data,
-        files={"file": (filename, audio, "audio/mpeg")},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json().get("transcript", "")
-
-
-def _transcribe_groq(audio: bytes, filename: str, language: Optional[str]) -> str:
-    api_key = plugin_settings.GROQ_API_KEY
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY is not configured (or set FILLY_MOCK=1)")
-
-    data = {
-        "model": plugin_settings.GROQ_ASR_MODEL,
-        "response_format": "json",
-        "temperature": "0",
-    }
-    if language:
-        data["language"] = language
-
-    response = requests.post(
-        f"{GROQ_BASE_URL}/audio/transcriptions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        data=data,
-        files={"file": (filename, audio, "audio/mpeg")},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json().get("text", "")
-
-
-def transcribe_chunk(audio: bytes, filename: str, language: Optional[str]) -> str:
+def transcribe_chunk(audio: bytes, filename: str, language: str | None) -> str:
     if mock_mode():
         return f"[mock transcript for {filename}]"
 
-    if plugin_settings.ASR_PROVIDER.lower() == "sarvam":
-        text = _transcribe_sarvam(audio, filename, language)
-    else:
-        text = _transcribe_groq(audio, filename, language)
+    text = get_asr_provider().transcribe(audio, filename, language)
     logger.info(
         "transcribed %s (%d bytes) -> %d chars", filename, len(audio), len(text)
     )
@@ -145,9 +90,9 @@ def _parse_json(raw: str) -> Any:
 
 def extract_structured(
     transcript: str,
-    template_desc: Optional[str] = None,
-    template_example: Optional[str] = None,
-) -> tuple[dict[str, Any], Optional[dict]]:
+    template_desc: str | None = None,
+    template_example: str | None = None,
+) -> tuple[dict[str, Any], dict | None]:
     """Run LLM extraction. Returns (structured_data, token_usage).
 
     token_usage is the provider's OpenAI-style usage object
@@ -159,18 +104,6 @@ def extract_structured(
             {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
         )
 
-    if plugin_settings.LLM_PROVIDER.lower() == "openai":
-        base_url = OPENAI_BASE_URL
-        api_key = plugin_settings.OPENAI_API_KEY
-        model = plugin_settings.OPENAI_LLM_MODEL
-    else:
-        base_url = GROQ_BASE_URL
-        api_key = plugin_settings.GROQ_API_KEY
-        model = plugin_settings.GROQ_LLM_MODEL
-
-    if not api_key:
-        raise RuntimeError("API key for the configured LLM provider is not set")
-
     system = template_desc or FALLBACK_INSTRUCTIONS
     if template_example:
         system += f"\n\nExample output format:\n{template_example}"
@@ -180,27 +113,9 @@ def extract_structured(
         "NEVER fabricate values."
     )
 
-    response = requests.post(
-        f"{base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {
-                    "role": "user",
-                    "content": f"Consultation transcript:\n\n{transcript}",
-                },
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0,
-        },
-        timeout=60,
+    content, usage = get_llm_provider().complete_json(
+        system, f"Consultation transcript:\n\n{transcript}"
     )
-    response.raise_for_status()
-    payload = response.json()
-    content = payload["choices"][0]["message"]["content"]
-    usage = payload.get("usage")
     result = _parse_json(content)
     if not isinstance(result, dict):
         return {"clinical_notes": str(result)}, usage

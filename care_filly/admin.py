@@ -11,7 +11,9 @@ class FillyQuotaAdmin(admin.ModelAdmin):
         "tokens",
         "tokens_per_user",
         "allow_scribe",
+        "deleted",
     )
+    list_filter = ("deleted", "allow_scribe")
     search_fields = ("user__username", "facility_external_id")
 
 

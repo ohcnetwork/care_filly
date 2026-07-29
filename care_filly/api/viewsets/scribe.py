@@ -1,27 +1,36 @@
-"""MedScribe Alliance Protocol (v0.1) endpoints as Django views.
+"""MedScribe Alliance Protocol (v0.1) endpoints as DRF views.
 
 Mounted by CARE at /api/care_filly/ — the frontend sets
 REACT_SCRIBE_BE_URL=<care-api-origin>/api/care_filly.
+
+Authentication follows CARE's DRF defaults (the logged-in CARE user's
+JWT), with an optional ``FILLY_AUTH_TOKEN`` static token checked first
+for standalone/service access (see ``care_filly.api.authentication``).
+URL paths and request/response shapes are fixed by the protocol and the
+scribe frontend — do not change them.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import logging
 import threading
 import time
 import uuid
-from typing import Optional
 
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse, JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
+from django.http import HttpRequest
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.settings import api_settings
+from rest_framework.views import APIView
 
 from care_filly import engine, quota, store
-from care_filly.settings import mock_mode, plugin_settings
+from care_filly.api.authentication import FillyStaticTokenAuthentication, care_user
+from care_filly.api.exceptions import FillyAPIError, filly_exception_handler
+from care_filly.settings import mock_mode
+from care_filly.tasks import finalize_session
 
 logger = logging.getLogger("care_filly")
 
@@ -50,56 +59,30 @@ SUPPORTED_LANGUAGES = [
 FINALIZE_TIMEOUT_SECONDS = 90
 
 
-def _authenticate(
-    request: HttpRequest,
-) -> tuple[Optional[JsonResponse], Optional[object]]:
-    """Accept either the CARE user's JWT (default) or a static token.
+class FillyAPIView(APIView):
+    """Session endpoints: CARE JWT (default) or the static service token."""
 
-    The frontend sends the logged-in CARE user's access token (same
-    convention as care_filly_fe), validated with CARE's own JWT auth.
-    A static FILLY_AUTH_TOKEN config is supported as an alternative
-    (e.g. standalone/testing).
+    authentication_classes = [
+        FillyStaticTokenAuthentication,
+        *api_settings.DEFAULT_AUTHENTICATION_CLASSES,
+    ]
 
-    Returns (error_response, user). `user` is the authenticated CARE user
-    or None when authenticated via static token / standalone mode.
-    """
-    static_token = plugin_settings.FILLY_AUTH_TOKEN
-    auth_header = request.headers.get("Authorization", "")
-    if static_token and auth_header == f"Bearer {static_token}":
-        return None, None
-
-    try:
-        from config.authentication import CustomJWTAuthentication
-
-        result = CustomJWTAuthentication().authenticate(request)
-        if result:
-            return None, result[0]
-    except ImportError:
-        # Not running inside CARE (standalone tests) — fall through.
-        if not static_token:
-            return None, None
-    except Exception:  # noqa: BLE001 — invalid/expired token
-        pass
-
-    return (
-        JsonResponse(
-            {"error": {"code": "unauthorized", "message": "Invalid or missing token"}},
-            status=401,
-        ),
-        None,
-    )
+    def get_exception_handler(self):
+        return filly_exception_handler
 
 
-def _auth_error(request: HttpRequest) -> Optional[JsonResponse]:
-    error, _user = _authenticate(request)
-    return error
+class FillyPublicAPIView(APIView):
+    """Unauthenticated endpoints (discovery, healthz, SDK chunk upload)."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get_exception_handler(self):
+        return filly_exception_handler
 
 
-def _not_found() -> JsonResponse:
-    return JsonResponse(
-        {"error": {"code": "session_not_found", "message": "Unknown session"}},
-        status=404,
-    )
+def _session_not_found() -> FillyAPIError:
+    return FillyAPIError("session_not_found", "Unknown session", 404)
 
 
 def _upload_token(session_id: str) -> str:
@@ -133,134 +116,121 @@ def _upload_url_record(request: HttpRequest, session_id: str) -> dict:
     }
 
 
-def _body(request: HttpRequest) -> dict:
-    try:
-        return json.loads(request.body or b"{}")
-    except json.JSONDecodeError:
-        return {}
-
-
-@require_http_methods(["GET"])
-def discovery(request: HttpRequest) -> JsonResponse:
-    base = request.build_absolute_uri("/api/care_filly/v1").rstrip("/")
-    return JsonResponse(
-        {
-            "protocol": "medscribealliance",
-            "protocol_version": "0.1",
-            "supported_versions": ["0.1"],
-            "service": {
-                "name": "CARE Filly Backend Plugin",
-                "documentation_url": "https://github.com/ohcnetwork/care_filly",
-            },
-            "endpoints": {"base_url": base},
-            "authentication": {"supported_methods": ["api_key"]},
-            "capabilities": {
-                "audio_formats": ["audio/mp3", "audio/mpeg", "audio/wav"],
-                "max_chunk_duration_seconds": 20,
-                "upload_methods": ["chunked", "single"],
-                "storage_provider": "aws",
-                "webhook_delivery": False,
-                "client_sdk_delivery": True,
-            },
-            "models": [
-                {
-                    "id": "pro",
-                    "display_name": "Whisper large-v3-turbo + LLM extraction",
-                    "languages": SUPPORTED_LANGUAGES,
-                    "max_session_duration_seconds": 3600,
-                    "response_speed": "fast",
-                    "features": {
-                        "realtime_transcription": True,
-                        "speaker_diarization": False,
-                        "custom_templates": True,
-                    },
-                }
-            ],
-            "languages": {"supported": SUPPORTED_LANGUAGES, "auto_detection": True},
-        }
-    )
-
-
-@csrf_exempt
-@require_http_methods(["POST"])
-def create_session(request: HttpRequest) -> JsonResponse:
-    err, user = _authenticate(request)
-    if err:
-        return err
-    body = _body(request)
-
-    additional_data = body.get("additional_data") or {}
-    facility_id = body.get("facility_id") or additional_data.get("facility_id")
-
-    # Quota enforcement only applies to CARE-authenticated users; static
-    # token / standalone mode has no user (and no database) to bill.
-    if user is not None:
-        if quota_error := quota.check_can_scribe(user, facility_id):
-            return JsonResponse({"error": quota_error}, status=403)
-
-    session_id = body.get("session_id") or uuid.uuid4().hex
-    session = store.create_session(
-        session_id,
-        templates=body.get("templates") or [],
-        language_hint=body.get("language_hint") or [],
-        additional_data=additional_data,
-        patient_details=body.get("patient_details"),
-        user_id=getattr(user, "id", None),
-        facility_id=str(facility_id) if facility_id else None,
-    )
-    logger.info("session %s created (templates=%s)", session_id, session["templates"])
-    return JsonResponse(
-        {
-            "session_id": session_id,
-            "status": session["status"],
-            "created_at": session["created_at"],
-            "expires_at": session["expires_at"],
-            "upload_url": _upload_url_record(request, session_id),
-            "patient_details": session["patient_details"],
-        }
-    )
-
-
-@csrf_exempt
-@require_http_methods(["POST"])
-def upload_chunk(request: HttpRequest, session_id: str, filename: str) -> JsonResponse:
-    """Legacy raw-body upload (Bearer auth, filename in path)."""
-    if err := _auth_error(request):
-        return err
-    session = store.get_session(session_id)
-    if session is None:
-        return _not_found()
-    return _accept_chunk(session, session_id, filename, request.body)
-
-
-@csrf_exempt
-@require_http_methods(["POST"])
-def upload_chunk_multipart(request: HttpRequest, session_id: str) -> JsonResponse:
-    """MedScribe Alliance SDK upload: multipart POST, token in form fields."""
-    session = store.get_session(session_id)
-    if session is None:
-        return _not_found()
-
-    token = request.POST.get("token", "")
-    if not hmac.compare_digest(token, _upload_token(session_id)):
-        return JsonResponse(
-            {"error": {"code": "unauthorized", "message": "Invalid upload token"}},
-            status=401,
+class DiscoveryView(FillyPublicAPIView):
+    def get(self, request):
+        base = request.build_absolute_uri("/api/care_filly/v1").rstrip("/")
+        return Response(
+            {
+                "protocol": "medscribealliance",
+                "protocol_version": "0.1",
+                "supported_versions": ["0.1"],
+                "service": {
+                    "name": "CARE Filly Backend Plugin",
+                    "documentation_url": "https://github.com/ohcnetwork/care_filly",
+                },
+                "endpoints": {"base_url": base},
+                "authentication": {"supported_methods": ["api_key"]},
+                "capabilities": {
+                    "audio_formats": ["audio/mp3", "audio/mpeg", "audio/wav"],
+                    "max_chunk_duration_seconds": 20,
+                    "upload_methods": ["chunked", "single"],
+                    "storage_provider": "aws",
+                    "webhook_delivery": False,
+                    "client_sdk_delivery": True,
+                },
+                "models": [
+                    {
+                        "id": "pro",
+                        "display_name": "Speech-to-text + LLM extraction",
+                        "languages": SUPPORTED_LANGUAGES,
+                        "max_session_duration_seconds": 3600,
+                        "response_speed": "fast",
+                        "features": {
+                            "realtime_transcription": True,
+                            "speaker_diarization": False,
+                            "custom_templates": True,
+                        },
+                    }
+                ],
+                "languages": {"supported": SUPPORTED_LANGUAGES, "auto_detection": True},
+            }
         )
 
-    file = request.FILES.get("file")
-    filename = request.POST.get("key") or (file.name if file else "")
-    audio = file.read() if file else b""
-    return _accept_chunk(session, session_id, filename, audio)
+
+class SessionCollectionView(FillyAPIView):
+    def post(self, request):
+        body = request.data or {}
+        additional_data = body.get("additional_data") or {}
+        facility_id = body.get("facility_id") or additional_data.get("facility_id")
+
+        # Quota enforcement only applies to CARE-authenticated users;
+        # static token / service mode has no user to bill.
+        user = care_user(request)
+        if user is not None and (
+            quota_error := quota.check_can_scribe(user, facility_id)
+        ):
+            return Response({"error": quota_error}, status=403)
+
+        session_id = body.get("session_id") or uuid.uuid4().hex
+        session = store.create_session(
+            session_id,
+            templates=body.get("templates") or [],
+            language_hint=body.get("language_hint") or [],
+            additional_data=additional_data,
+            patient_details=body.get("patient_details"),
+            user_id=getattr(user, "id", None),
+            facility_id=str(facility_id) if facility_id else None,
+        )
+        logger.info(
+            "session %s created (templates=%s)", session_id, session["templates"]
+        )
+        return Response(
+            {
+                "session_id": session_id,
+                "status": session["status"],
+                "created_at": session["created_at"],
+                "expires_at": session["expires_at"],
+                "upload_url": _upload_url_record(request, session_id),
+                "patient_details": session["patient_details"],
+            }
+        )
+
+
+class UploadChunkView(FillyAPIView):
+    """Legacy raw-body upload (Bearer auth, filename in path)."""
+
+    def post(self, request, session_id: str, filename: str):
+        session = store.get_session(session_id)
+        if session is None:
+            raise _session_not_found()
+        return _accept_chunk(session, session_id, filename, request.body)
+
+
+class UploadChunkMultipartView(FillyPublicAPIView):
+    """MedScribe Alliance SDK upload: multipart POST, token in form fields."""
+
+    def post(self, request, session_id: str):
+        session = store.get_session(session_id)
+        if session is None:
+            raise _session_not_found()
+
+        token = request.data.get("token", "")
+        if not hmac.compare_digest(token, _upload_token(session_id)):
+            raise FillyAPIError("unauthorized", "Invalid upload token", 401)
+
+        file = request.FILES.get("file")
+        filename = request.data.get("key") or (file.name if file else "")
+        audio = file.read() if file else b""
+        return _accept_chunk(session, session_id, filename, audio)
 
 
 def _accept_chunk(
     session: dict, session_id: str, filename: str, audio: bytes
-) -> JsonResponse:
+) -> Response:
     if not audio:
-        return JsonResponse({"error": "Empty audio body"}, status=400)
+        return Response({"error": "Empty audio body"}, status=400)
     if not filename:
-        return JsonResponse({"error": "Missing filename"}, status=400)
+        return Response({"error": "Missing filename"}, status=400)
 
     idx = store.parse_chunk_index(filename)
     if idx is None:
@@ -273,10 +243,10 @@ def _accept_chunk(
         try:
             text = engine.transcribe_chunk(audio, filename, language)
             store.set_chunk_result(session_id, idx, text)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("chunk %s transcription failed", filename)
             store.set_chunk_result(session_id, idx, "", error=str(exc))
-            with store.session_lock(session_id):
+            with store.SessionLock(session_id):
                 s = store.get_session(session_id)
                 if s is not None:
                     s["processing_errors"].append(
@@ -291,15 +261,15 @@ def _accept_chunk(
     # Transcription starts NOW, while the doctor is still talking.
     threading.Thread(target=_transcribe, daemon=True).start()
 
-    return JsonResponse({"success": True, "file": filename})
+    return Response({"success": True, "file": filename})
 
 
 def _finalize(session_id: str) -> None:
-    """Wait for chunk transcripts, assemble, then run LLM extraction."""
-    # Runs on a daemon thread — discard stale DB connections before ORM use.
-    from django.db import close_old_connections
+    """Assemble transcript and run LLM extraction for a finished session.
 
-    close_old_connections()
+    Called by the ``finalize_session`` Celery task.  Celery manages DB
+    connection cleanup, so the old ``close_old_connections()`` call is gone.
+    """
     session = store.get_session(session_id)
     if session is None:
         return
@@ -331,7 +301,7 @@ def _finalize(session_id: str) -> None:
         results = {tid: {"status": "success", "data": data} for tid in template_ids}
         status = "completed"
         errors = []
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("session %s extraction failed", session_id)
         results = {
             tid: {
@@ -355,7 +325,7 @@ def _finalize(session_id: str) -> None:
         error=errors[0]["message"] if errors else None,
     )
 
-    with store.session_lock(session_id):
+    with store.SessionLock(session_id):
         s = store.get_session(session_id)
         if s is None:
             return
@@ -369,143 +339,125 @@ def _finalize(session_id: str) -> None:
     logger.info("session %s finalized: %s", session_id, status)
 
 
-@csrf_exempt
-@require_http_methods(["POST"])
-def end_session(request: HttpRequest, session_id: str) -> JsonResponse:
-    if err := _auth_error(request):
-        return err
-    session = store.update_session(session_id, status="processing")
-    if session is None:
-        return _not_found()
+class SessionEndView(FillyAPIView):
+    def post(self, request, session_id: str):
+        session = store.update_session(session_id, status="processing")
+        if session is None:
+            raise _session_not_found()
 
-    threading.Thread(target=_finalize, args=(session_id,), daemon=True).start()
+        finalize_session.delay(session_id)
 
-    return JsonResponse(
-        {
-            "session_id": session_id,
-            "status": "processing",
-            "message": "Processing started",
-            "audio_files_received": len(session["audio_files"]),
-            "audio_files": session["audio_files"],
-        }
-    )
+        return Response(
+            {
+                "session_id": session_id,
+                "status": "processing",
+                "message": "Processing started",
+                "audio_files_received": len(session["audio_files"]),
+                "audio_files": session["audio_files"],
+            }
+        )
 
 
-@csrf_exempt
-def session_detail(request: HttpRequest, session_id: str) -> HttpResponse:
-    if request.method == "PATCH":
-        return _patch_session(request, session_id)
-    if request.method == "GET":
-        return _get_session_status(request, session_id)
-    return HttpResponse(status=405)
+class SessionDetailView(FillyAPIView):
+    def get(self, request, session_id: str):
+        session = store.get_session(session_id)
+        if session is None:
+            raise _session_not_found()
+
+        template_results = session["template_results"]
+        if template_results:
+            templates = [{tid: result} for tid, result in template_results.items()]
+        elif session["status"] == "processing":
+            templates = [
+                {tid: {"status": "in-progress"}} for tid in session["templates"]
+            ]
+        else:
+            templates = []
+
+        # Expose the transcript as soon as all chunks are transcribed —
+        # the FE shows it immediately while extraction is still running.
+        transcript = session["transcript"]
+        chunks = store.get_chunks(session_id, session["chunk_indexes"])
+        if (
+            transcript is None
+            and chunks
+            and store.all_chunks_done(chunks, session["chunk_indexes"])
+        ):
+            transcript = store.assemble_transcript(chunks)
+
+        return Response(
+            {
+                "session_id": session_id,
+                "status": session["status"],
+                "created_at": session["created_at"],
+                "expires_at": session["expires_at"],
+                "completed_at": session["completed_at"],
+                "model_used": "pro",
+                "language_detected": None,
+                "audio_files_received": len(session["audio_files"]),
+                "audio_files": session["audio_files"],
+                "audio_files_processed": sum(
+                    1 for c in chunks.values() if c.get("text") is not None
+                ),
+                "additional_data": session["additional_data"],
+                "templates": templates,
+                "transcript": transcript,
+                "processing_errors": session["processing_errors"],
+                "patient_details": session["patient_details"],
+                "usage": session.get("usage"),
+                "upload_url": _upload_url_record(request, session_id),
+            }
+        )
+
+    def patch(self, request, session_id: str):
+        body = request.data or {}
+        session = store.get_session(session_id)
+        if session is None:
+            raise _session_not_found()
+
+        updates = {}
+        for key in ("templates", "language_hint", "patient_details"):
+            if body.get(key):
+                updates[key] = body[key]
+        if body.get("additional_data"):
+            merged = {**session["additional_data"], **body["additional_data"]}
+            updates["additional_data"] = merged
+        if updates:
+            store.update_session(session_id, **updates)
+        return Response(
+            {
+                "session_id": session_id,
+                "status": session["status"],
+                "message": "Session updated",
+            }
+        )
 
 
-def _get_session_status(request: HttpRequest, session_id: str) -> JsonResponse:
-    if err := _auth_error(request):
-        return err
-    session = store.get_session(session_id)
-    if session is None:
-        return _not_found()
+class ProcessTemplateView(FillyAPIView):
+    def post(self, request, session_id: str, template_id: str):
+        session = store.get_session(session_id)
+        if session is None:
+            raise _session_not_found()
 
-    template_results = session["template_results"]
-    if template_results:
-        templates = [{tid: result} for tid, result in template_results.items()]
-    elif session["status"] == "processing":
-        templates = [{tid: {"status": "in-progress"}} for tid in session["templates"]]
-    else:
-        templates = []
+        with store.SessionLock(session_id):
+            s = store.get_session(session_id)
+            if template_id not in s["templates"]:
+                s["templates"].append(template_id)
+            s["template_results"].pop(template_id, None)
+            s["status"] = "processing"
+            store.save_session(s)
 
-    # Expose the transcript as soon as all chunks are transcribed — the FE
-    # shows it immediately while extraction is still running.
-    transcript = session["transcript"]
-    chunks = store.get_chunks(session_id, session["chunk_indexes"])
-    if (
-        transcript is None
-        and chunks
-        and store.all_chunks_done(chunks, session["chunk_indexes"])
-    ):
-        transcript = store.assemble_transcript(chunks)
-
-    return JsonResponse(
-        {
-            "session_id": session_id,
-            "status": session["status"],
-            "created_at": session["created_at"],
-            "expires_at": session["expires_at"],
-            "completed_at": session["completed_at"],
-            "model_used": "pro",
-            "language_detected": None,
-            "audio_files_received": len(session["audio_files"]),
-            "audio_files": session["audio_files"],
-            "audio_files_processed": sum(
-                1 for c in chunks.values() if c.get("text") is not None
-            ),
-            "additional_data": session["additional_data"],
-            "templates": templates,
-            "transcript": transcript,
-            "processing_errors": session["processing_errors"],
-            "patient_details": session["patient_details"],
-            "usage": session.get("usage"),
-            "upload_url": _upload_url_record(request, session_id),
-        }
-    )
+        finalize_session.delay(session_id)
+        return Response(
+            {
+                "session_id": session_id,
+                "template_id": template_id,
+                "status": "processing",
+                "message": "Template processing triggered",
+            }
+        )
 
 
-def _patch_session(request: HttpRequest, session_id: str) -> JsonResponse:
-    if err := _auth_error(request):
-        return err
-    body = _body(request)
-    updates = {}
-    for key in ("templates", "language_hint", "patient_details"):
-        if body.get(key):
-            updates[key] = body[key]
-    session = store.get_session(session_id)
-    if session is None:
-        return _not_found()
-    if body.get("additional_data"):
-        merged = {**session["additional_data"], **body["additional_data"]}
-        updates["additional_data"] = merged
-    if updates:
-        store.update_session(session_id, **updates)
-    return JsonResponse(
-        {
-            "session_id": session_id,
-            "status": session["status"],
-            "message": "Session updated",
-        }
-    )
-
-
-@csrf_exempt
-@require_http_methods(["POST"])
-def process_template(
-    request: HttpRequest, session_id: str, template_id: str
-) -> JsonResponse:
-    if err := _auth_error(request):
-        return err
-    session = store.get_session(session_id)
-    if session is None:
-        return _not_found()
-
-    with store.session_lock(session_id):
-        s = store.get_session(session_id)
-        if template_id not in s["templates"]:
-            s["templates"].append(template_id)
-        s["template_results"].pop(template_id, None)
-        s["status"] = "processing"
-        store.save_session(s)
-
-    threading.Thread(target=_finalize, args=(session_id,), daemon=True).start()
-    return JsonResponse(
-        {
-            "session_id": session_id,
-            "template_id": template_id,
-            "status": "processing",
-            "message": "Template processing triggered",
-        }
-    )
-
-
-@require_http_methods(["GET"])
-def healthz(request: HttpRequest) -> JsonResponse:
-    return JsonResponse({"ok": True, "mock": mock_mode()})
+class HealthzView(FillyPublicAPIView):
+    def get(self, request):
+        return Response({"ok": True, "mock": mock_mode()})

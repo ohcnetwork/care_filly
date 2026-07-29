@@ -16,32 +16,30 @@ CARE internals) so the plugin stays loosely coupled.
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
-from typing import Optional
 
 from django.conf import settings
 from django.db import models
 from django.db.models import Q, Sum
 from django.utils import timezone
 
+from care.emr.models.base import EMRBaseModel
+
+DECEMBER = 12
+
 
 def month_window() -> tuple[datetime, datetime]:
     """[start, end) of the current calendar month, evaluated at call time."""
     now = timezone.now()
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    if start.month == 12:
+    if start.month == DECEMBER:
         end = start.replace(year=start.year + 1, month=1)
     else:
         end = start.replace(month=start.month + 1)
     return start, end
 
 
-class FillyQuota(models.Model):
-    external_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    created_date = models.DateTimeField(auto_now_add=True, db_index=True)
-    modified_date = models.DateTimeField(auto_now=True)
-
+class FillyQuota(EMRBaseModel):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -70,25 +68,21 @@ class FillyQuota(models.Model):
         help_text="Hash of the terms and conditions accepted by the user",
     )
     tnc_accepted_date = models.DateTimeField(null=True, blank=True)
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        related_name="created_filly_quotas",
-        null=True,
-        blank=True,
-    )
 
     class Meta:
         verbose_name = "Filly Quota"
         verbose_name_plural = "Filly Quotas"
         constraints = [
+            # `deleted=False` in both conditions: soft-deleted rows must not
+            # block re-creating a quota for the same facility/user.
             models.UniqueConstraint(
                 fields=["facility_external_id"],
-                condition=Q(user__isnull=True),
+                condition=Q(user__isnull=True, deleted=False),
                 name="unique_facility_filly_quota",
             ),
             models.UniqueConstraint(
                 fields=["user", "facility_external_id"],
+                condition=Q(deleted=False),
                 name="unique_user_facility_filly_quota",
             ),
         ]
@@ -105,11 +99,8 @@ class FillyQuota(models.Model):
         return f"{who} - {self.tokens} tokens"
 
 
-class FillyUsage(models.Model):
-    """One immutable row per completed scribe session."""
-
-    external_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    created_date = models.DateTimeField(auto_now_add=True, db_index=True)
+class FillyUsage(EMRBaseModel):
+    """One immutable row per completed scribe session (never updated)."""
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -138,7 +129,7 @@ class FillyUsage(models.Model):
         return f"{self.session_id}: {self.total_tokens} tokens"
 
 
-def used_tokens(facility_external_id, user_id: Optional[int] = None) -> int:
+def used_tokens(facility_external_id, user_id: int | None = None) -> int:
     """Current-month token consumption for a facility or a user in it."""
     start, end = month_window()
     qs = FillyUsage.objects.filter(

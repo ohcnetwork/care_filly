@@ -48,11 +48,17 @@ for key in ("session_id", "status", "created_at", "expires_at", "upload_url"):
 print("2. session created:", sid)
 
 for i in (1, 2):
-    r = call("POST", f"/v1/upload/{sid}/audio_{i}.mp3", raw=b"fake-mp3", ctype="audio/mp3")
+    r = call(
+        "POST", f"/v1/upload/{sid}/audio_{i}.mp3", raw=b"fake-mp3", ctype="audio/mp3"
+    )
     assert r.get("success"), r
 print("3. chunks uploaded (transcription kicked off during recording)")
 
-end = call("POST", f"/v1/sessions/{sid}/end", body={"audio_files_sent": 2, "audio_files_uploaded": 2})
+end = call(
+    "POST",
+    f"/v1/sessions/{sid}/end",
+    body={"audio_files_sent": 2, "audio_files_uploaded": 2},
+)
 assert end["audio_files_received"] == 2, end
 print("4. session ended:", end["status"])
 
