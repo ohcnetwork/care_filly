@@ -25,6 +25,7 @@ urlpatterns = [
         history.upload_history_audio,
     ),
     path("v1/history/<str:external_id>/audio", history.history_audio),
+    path("v1/history/<str:external_id>/audio/raw", history.history_audio_raw),
     path("v1/history/<str:external_id>", history.history_detail),
     path("healthz", filly.healthz),
 ]

@@ -8,7 +8,8 @@ can list, read or delete another user's history.
 - GET    v1/history                              -> {count, results}
 - DELETE v1/history                              -> clear the user's history
 - DELETE v1/history/<external_id>                -> delete one entry
-- GET    v1/history/<external_id>/audio          -> redirect to a signed URL
+- GET    v1/history/<external_id>/audio          -> {"url": signed URL}
+- GET    v1/history/<external_id>/audio/raw      -> recording bytes (proxied)
 - POST   v1/history/session/<session_id>/audio   -> attach the recording
 """
 
@@ -17,13 +18,11 @@ import logging
 from django.http import (
     HttpRequest,
     HttpResponse,
-    HttpResponseRedirect,
     JsonResponse,
 )
 from django.utils import timezone
 
 from care.security.authorization import AuthorizationController
-
 from care_filly.api.common import authenticate, error, parse_uuid
 from care_filly.models import HISTORY_STATUSES, FillySession
 
@@ -121,6 +120,12 @@ def history_detail(request: HttpRequest, external_id: str) -> JsonResponse:
 
 
 def history_audio(request: HttpRequest, external_id: str) -> HttpResponse:
+    """Hand the client a short-lived signed URL for the recording.
+
+    Clients play it directly via ``<audio src>`` (a no-cors media load), so
+    the object-storage bucket needs no CORS policy — mirroring how the rest
+    of CARE serves files.
+    """
     if request.method != "GET":
         return HttpResponse(status=405)
     err, user = _require_user(request)
@@ -129,7 +134,32 @@ def history_audio(request: HttpRequest, external_id: str) -> HttpResponse:
     entry = _get_entry(user, external_id)
     if entry is None or not entry.has_audio():
         return _entry_not_found()
-    return HttpResponseRedirect(entry.read_audio_url())
+    return JsonResponse({"url": entry.read_audio_url()})
+
+
+def history_audio_raw(request: HttpRequest, external_id: str) -> HttpResponse:
+    """Stream the recording bytes through CARE (same-origin).
+
+    Used only when the browser needs the raw bytes (e.g. re-running the
+    pipeline on a past recording). Routing through CARE keeps it a
+    same-origin, CORS-enabled request instead of a cross-origin fetch to
+    object storage.
+    """
+    if request.method != "GET":
+        return HttpResponse(status=405)
+    err, user = _require_user(request)
+    if err:
+        return err
+    entry = _get_entry(user, external_id)
+    if entry is None or not entry.has_audio():
+        return _entry_not_found()
+    content_type, content = entry.files_manager.file_contents(entry)
+    return HttpResponse(
+        content,
+        content_type=content_type
+        or entry.audio_mime_type
+        or "application/octet-stream",
+    )
 
 
 def upload_history_audio(request: HttpRequest, session_id: str) -> JsonResponse:
