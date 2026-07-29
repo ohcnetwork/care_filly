@@ -65,7 +65,9 @@ qid = q["external_id"]
 
 r = c.get(f"{B}/quota")
 data = r.json()
-assert data["count"] >= 1 and any(x["external_id"] == qid for x in data["results"]), data
+assert data["count"] >= 1 and any(x["external_id"] == qid for x in data["results"]), (
+    data
+)
 
 r = c.get(f"{B}/quota/{qid}")
 assert r.json()["external_id"] == qid
@@ -98,9 +100,7 @@ r = c.post(
         "templates": ["care_form"],
         "language_hint": ["auto_detect"],
         "facility_id": fid,
-        "additional_data": {
-            "care_template": {"desc": "extract", "example": "{}"}
-        },
+        "additional_data": {"care_template": {"desc": "extract", "example": "{}"}},
     },
     format="json",
 )
