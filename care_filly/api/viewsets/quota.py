@@ -141,18 +141,41 @@ def accept_tnc(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"detail": "Terms and Conditions accepted successfully."})
 
 
-def _user_has_filly_facility(user) -> bool:
-    """True when any facility the user belongs to has filly enabled."""
+def _filly_availability(user) -> tuple[bool, bool]:
+    """Return ``(facility_available, admin_disabled)`` for the user.
+
+    - ``facility_available``: at least one facility the user belongs to has
+      filly enabled at the facility level.
+    - ``admin_disabled``: filly is available at some facility, but an admin
+      has switched this user's per-user quota off in every such facility, so
+      the user cannot re-enable it themselves.
+    """
     from care.emr.models.organization import FacilityOrganizationUser
 
-    facility_ids = FacilityOrganizationUser.objects.filter(user=user).values_list(
-        "organization__facility_id", flat=True
+    facility_ids = list(
+        FacilityOrganizationUser.objects.filter(user=user).values_list(
+            "organization__facility_id", flat=True
+        )
     )
-    return FillyQuota.objects.filter(
-        facility_id__in=list(facility_ids),
-        user=None,
-        allow_filly=True,
-    ).exists()
+    enabled_ids = set(
+        FillyQuota.objects.filter(
+            facility_id__in=facility_ids,
+            user=None,
+            allow_filly=True,
+        ).values_list("facility_id", flat=True)
+    )
+    if not enabled_ids:
+        return False, False
+
+    blocked_ids = set(
+        FillyQuota.objects.filter(
+            user=user,
+            facility_id__in=enabled_ids,
+            allow_filly=False,
+        ).values_list("facility_id", flat=True)
+    )
+    allowed_anywhere = bool(enabled_ids - blocked_ids)
+    return True, not allowed_anywhere
 
 
 def filly_preference(request: HttpRequest) -> HttpResponse:
@@ -165,7 +188,7 @@ def filly_preference(request: HttpRequest) -> HttpResponse:
 
     tnc, tnc_hash = current_tnc()
     pref = FillyUserPreference.objects.filter(user=user).first()
-    facility_available = _user_has_filly_facility(user)
+    facility_available, admin_disabled = _filly_availability(user)
 
     if request.method == "PUT":
         enabled = bool(body(request).get("enabled"))
@@ -174,6 +197,12 @@ def filly_preference(request: HttpRequest) -> HttpResponse:
                 "no_facility_quota",
                 "None of your facilities have filly enabled.",
                 400,
+            )
+        if enabled and admin_disabled:
+            return error(
+                "filly_disabled",
+                "An administrator has disabled filly for your account.",
+                403,
             )
         if pref is None:
             pref = FillyUserPreference(user=user, created_by=user)
@@ -193,6 +222,7 @@ def filly_preference(request: HttpRequest) -> HttpResponse:
             if pref and pref.tnc_accepted_date
             else None,
             "facility_available": facility_available,
+            "admin_disabled": admin_disabled,
         }
     )
 
