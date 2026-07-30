@@ -23,9 +23,9 @@ this backend:   record ─ transcribe chunks as they upload ─┤stop├─ las
 ```
 
 - Audio chunks (≤20s each) upload during recording; each is transcribed immediately
-  (Sarvam AI by default, or Groq `whisper-large-v3-turbo`).
+  (Sarvam AI by default, or an OpenAI-compatible Whisper endpoint).
 - On stop, only the final chunk remains → transcript assembled almost instantly.
-- One LLM call (Groq `llama-3.3-70b-versatile` JSON mode by default, or OpenAI)
+- One LLM call (OpenAI `gpt-4o-mini` JSON mode by default, or any OpenAI-compatible vendor)
   converts the transcript into form-fill JSON using the questionnaire schema the
   frontend sends per-session in `additional_data`.
 
@@ -101,11 +101,11 @@ The CARE-plugin mode additionally exposes quota and history management:
 | `ASR_PROVIDER`       | `sarvam`                  | `sarvam` (best for Indian languages) or `openai_compat` (Whisper)         |
 | `ASR_API_KEY`        | —                         | Required (speech-to-text) for the active `ASR_PROVIDER`                   |
 | `ASR_BASE_URL`       | `https://api.sarvam.ai`   | ASR vendor base URL (set to the OpenAI-compatible base for `openai_compat`) |
-| `ASR_MODEL`          | `saaras:v3`               | `saaras:v3` / `saarika:v2.5` (Sarvam) or `whisper-large-v3-turbo` (Whisper) |
+| `ASR_MODEL`          | `saaras:v3`               | `saaras:v3` / `saarika:v2.5` (Sarvam) or `whisper-1` (Whisper) |
 | `SARVAM_ASR_MODE`    | `translate`               | `translate` (English output) or `transcribe` (original script)           |
 | `LLM_API_KEY`        | —                         | Required (structured extraction)                                          |
-| `LLM_BASE_URL`       | `https://api.groq.com/openai/v1` | OpenAI-compatible LLM base URL                                     |
-| `LLM_MODEL`         | `llama-3.3-70b-versatile` | Extraction model                                                                                            |
+| `LLM_BASE_URL`       | `https://api.openai.com/v1` | OpenAI-compatible LLM base URL                                     |
+| `LLM_MODEL`         | `gpt-4o-mini` | Extraction model                                                                                            |
 | `FILLY_AUTH_TOKEN` | —                         | Optional static bearer token accepted instead of a CARE JWT (testing)  |
 | `FILLY_MOCK`       | `0`                       | `1` = fake ASR/LLM, no keys needed                                                                          |
 | `FILLY_TNC`        | (built-in text)           | Terms & conditions shown before a user's first Filly session               |

@@ -113,8 +113,8 @@ DEFAULTS = {
     # --- ASR (speech-to-text): one key/base_url/model per capability, used
     # by whichever ASR_PROVIDER is active. Defaults target Sarvam (the default
     # provider). For openai_compat/Whisper set ASR_BASE_URL to the vendor's
-    # OpenAI-compatible base (e.g. https://api.groq.com/openai/v1) and
-    # ASR_MODEL to e.g. whisper-large-v3-turbo.
+    # OpenAI-compatible base (e.g. https://api.openai.com/v1) and
+    # ASR_MODEL to e.g. whisper-1.
     "ASR_BASE_URL": "https://api.sarvam.ai",
     "ASR_API_KEY": "",
     "ASR_MODEL": "saaras:v3",
@@ -122,9 +122,9 @@ DEFAULTS = {
     # (best for form-fill); "transcribe" keeps the original language/script.
     "SARVAM_ASR_MODE": "translate",
     # --- LLM (structured extraction): OpenAI-compatible ---------------------
-    "LLM_BASE_URL": "https://api.groq.com/openai/v1",
+    "LLM_BASE_URL": "https://api.openai.com/v1",
     "LLM_API_KEY": "",
-    "LLM_MODEL": "llama-3.3-70b-versatile",
+    "LLM_MODEL": "gpt-4o-mini",
     # --- Session / pipeline tuning -----------------------------------------
     # Seconds of audio per uploaded chunk (used to estimate recorded duration).
     "CHUNK_SECONDS": 20,
