@@ -1,9 +1,8 @@
-.PHONY: clean clean-build clean-pyc lint test dist install help
+.PHONY: clean clean-build clean-pyc lint dist install help
 
 help:
 	@echo "clean      - remove all build and Python artifacts"
 	@echo "lint       - check style with flake8"
-	@echo "test       - run tests"
 	@echo "dist       - build source and wheel packages"
 	@echo "install    - install the package to the active Python's site-packages"
 
@@ -22,10 +21,7 @@ clean-pyc:
 	find . -name '__pycache__' -exec rm -fr {} +
 
 lint:
-	flake8 care_filly tests
-
-test:
-	python -m unittest discover tests
+	flake8 care_filly
 
 dist: clean
 	python setup.py sdist bdist_wheel

@@ -19,12 +19,6 @@ FILLY_USER_ROLES = [
     ADMINISTRATOR,
 ]
 
-FILLY_ADMIN_ROLES = [
-    ADMIN_ROLE,
-    FACILITY_ADMIN_ROLE,
-    ADMINISTRATOR,
-]
-
 
 class FillyPermissions(enum.Enum):
     can_use_filly = Permission(
@@ -32,16 +26,4 @@ class FillyPermissions(enum.Enum):
         "Allows recording an encounter and generating a filly draft",
         PermissionContext.FACILITY,
         FILLY_USER_ROLES,
-    )
-    can_view_filly_history = Permission(
-        "Can View Filly History",
-        "Allows viewing past filly sessions",
-        PermissionContext.FACILITY,
-        FILLY_USER_ROLES,
-    )
-    can_manage_filly_quota = Permission(
-        "Can Manage Filly Quota",
-        "Allows configuring filly token quotas for a facility",
-        PermissionContext.FACILITY,
-        FILLY_ADMIN_ROLES,
     )
