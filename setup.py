@@ -17,8 +17,6 @@ requirements = [
     "django-environ",
 ]
 
-test_requirements = []
-
 setup(
     author="Open Healthcare Network",
     author_email="info@ohc.network",
@@ -33,10 +31,7 @@ setup(
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
     ],
-    description=(
-        "Self-hosted, MedScribe Alliance protocol compatible scribe "
-        "backend plugin for CARE"
-    ),
+    description="Medispeak scribe session/token seam plugin for CARE",
     install_requires=requirements,
     license="MIT license",
     long_description=readme + "\n\n" + history,
@@ -45,8 +40,6 @@ setup(
     keywords="care_filly",
     name="care_filly",
     packages=find_packages(include=["care_filly", "care_filly.*"]),
-    test_suite="tests",
-    tests_require=test_requirements,
     url="https://github.com/ohcnetwork/care_filly",
     version="0.1.0",
     zip_safe=False,

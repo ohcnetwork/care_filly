@@ -8,9 +8,7 @@ between the browser and Medispeak — this backend never sees the audio.
 
 import logging
 
-from django.db import transaction
 from django.http import HttpRequest, JsonResponse
-from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from care.security.authorization import AuthorizationController
@@ -22,11 +20,28 @@ from care_filly.api.common import (
     parse_uuid,
     resolve_facility,
 )
-from care_filly.models import FillyUsage, MedispeakSession
-from care_filly.providers.base import ProviderError
-from care_filly.quota import check_can_filly
+from care_filly.http import MedispeakError
+from care_filly.models import MedispeakSession
 
 logger = logging.getLogger("care_filly")
+
+
+def filly_enabled(user) -> bool:
+    """Per-user opt-in, stored on CARE core's ``User.preferences``.
+
+    This is a UI-consistency check, NOT access control. CARE's
+    ``set_preferences`` action is authenticated-only and always writes to
+    ``request.user``, so this flag is user-settable by definition. Real
+    access control is the ``can_use_filly`` permission checked alongside it.
+    """
+    preferences = getattr(user, "preferences", None) or {}
+    filly = preferences.get("filly") or {}
+    return bool(isinstance(filly, dict) and filly.get("enabled"))
+
+
+@require_http_methods(["GET"])
+def healthz(request: HttpRequest) -> JsonResponse:
+    return JsonResponse({"ok": True})
 
 
 @require_http_methods(["POST"])
@@ -45,8 +60,12 @@ def create_medispeak_session(request: HttpRequest) -> JsonResponse:
         )
     if not AuthorizationController.call("can_use_filly", user, facility):
         return error("forbidden", "You do not have permission to use filly.", 403)
-    if quota_error := check_can_filly(user, facility):
-        return JsonResponse({"error": quota_error}, status=403)
+    if not filly_enabled(user):
+        return error(
+            "filly_not_enabled",
+            "Filly is not enabled for your account.",
+            403,
+        )
 
     outputs: list[dict] = [{"type": "transcript"}]
     fields = b.get("fields")
@@ -60,7 +79,7 @@ def create_medispeak_session(request: HttpRequest) -> JsonResponse:
             mode=b.get("mode", "consultation"),
         )
         token = medispeak_client.mint_session_token(str(session["id"]))
-    except ProviderError as exc:
+    except MedispeakError as exc:
         logger.exception("medispeak session creation failed")
         return error("medispeak_error", str(exc), 502)
 
@@ -99,61 +118,10 @@ def mint_medispeak_token(request: HttpRequest, session_id: str) -> JsonResponse:
 
     try:
         token = medispeak_client.mint_session_token(row.medispeak_session_id)
-    except ProviderError as exc:
+    except MedispeakError as exc:
         logger.exception("medispeak token mint failed")
         return error("medispeak_error", str(exc), 502)
 
     return JsonResponse(
         {"token": token.get("token"), "expires_at": token.get("expires_at")}
-    )
-
-
-@require_http_methods(["POST"])
-def finalize_medispeak_session(request: HttpRequest, session_id: str) -> JsonResponse:
-    """Record quota usage for a finished Medispeak session (idempotent).
-
-    Usage is pulled from Medispeak itself (the authoritative source), not
-    trusted from the browser, and only ever recorded once per session.
-    """
-    err, user = authenticate(request)
-    if err:
-        return err
-
-    if parse_uuid(session_id) is None:
-        return error("session_not_found", "Unknown session", 404)
-
-    with transaction.atomic():
-        row = (
-            MedispeakSession.objects.select_for_update()
-            .filter(external_id=session_id, user=user, deleted=False)
-            .first()
-        )
-        if row is None:
-            return error("session_not_found", "Unknown session", 404)
-        if row.usage_recorded_at is not None:
-            return JsonResponse({"status": "already_recorded"})
-
-        try:
-            session = medispeak_client.get_session(row.medispeak_session_id)
-        except ProviderError as exc:
-            logger.exception("medispeak usage fetch failed")
-            return error("medispeak_error", str(exc), 502)
-
-        usage = session.get("usage") or {}
-        # Medispeak reports one combined token count, not input/output split.
-        usage_row = FillyUsage.objects.create(
-            user=row.user,
-            facility=row.facility,
-            input_tokens=int(usage.get("total_tokens") or 0),
-            audio_seconds=int(usage.get("audio_seconds") or 0),
-        )
-        row.usage_recorded_at = timezone.now()
-        row.save(update_fields=["usage_recorded_at", "modified_date"])
-
-    return JsonResponse(
-        {
-            "status": "recorded",
-            "input_tokens": usage_row.input_tokens,
-            "audio_seconds": usage_row.audio_seconds,
-        }
     )
