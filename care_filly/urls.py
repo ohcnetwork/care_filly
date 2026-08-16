@@ -1,7 +1,7 @@
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 
-from care_filly.api.viewsets import filly, history, quota
+from care_filly.api.viewsets import filly, history, medispeak, quota
 
 urlpatterns = [
     path("v1/sessions", filly.create_session),
@@ -11,6 +11,18 @@ urlpatterns = [
     path(
         "v1/sessions/<str:session_id>/process/template/<str:template_id>",
         filly.process_template,
+    ),
+    # Medispeak session/token seam — the browser talks to Medispeak directly
+    # after this; these two routes are the only ones that hold the account
+    # secret.
+    path("v1/medispeak/sessions", medispeak.create_medispeak_session),
+    path(
+        "v1/medispeak/sessions/<str:session_id>/token",
+        medispeak.mint_medispeak_token,
+    ),
+    path(
+        "v1/medispeak/sessions/<str:session_id>/finalize",
+        medispeak.finalize_medispeak_session,
     ),
     # Quota & usage (literal paths before the catch-all detail route)
     path("v1/quota/my", quota.my_quota),

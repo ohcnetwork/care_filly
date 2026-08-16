@@ -105,7 +105,10 @@ REQUIRED_SETTINGS: set = set()
 DEFAULTS = {
     # --- Provider selection -------------------------------------------------
     # ASR: "sarvam" (best for Indian languages), "openai_compat" (Whisper via
-    # any OpenAI-compatible vendor) or "mock". LLM: "openai_compat" or "mock".
+    # any OpenAI-compatible vendor), "medispeak" (hosted Medispeak session
+    # API) or "mock". LLM: "openai_compat" or "mock".
+    # Vendor-agnostic override: a configured MEDISPEAK_API_KEY always wins
+    # over ASR_PROVIDER (see get_asr_provider) — no flag needs flipping.
     "ASR_PROVIDER": "sarvam",
     "LLM_PROVIDER": "openai_compat",
     # FILLY_MOCK=1 forces both providers to "mock" (no network / API keys).
@@ -121,6 +124,10 @@ DEFAULTS = {
     # saaras mode: "translate" outputs English directly from Indic speech
     # (best for form-fill); "transcribe" keeps the original language/script.
     "SARVAM_ASR_MODE": "translate",
+    # --- Medispeak (hosted ASR, used when ASR_PROVIDER="medispeak") --------
+    # Account secret (msk_live_...) — never expose this to a browser.
+    "MEDISPEAK_API_KEY": "",
+    "MEDISPEAK_BASE_URL": "",
     # --- LLM (structured extraction): OpenAI-compatible ---------------------
     "LLM_BASE_URL": "https://api.openai.com/v1",
     "LLM_API_KEY": "",

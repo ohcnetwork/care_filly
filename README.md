@@ -98,11 +98,13 @@ The CARE-plugin mode additionally exposes quota and history management:
 | Variable            | Default                   | Purpose                                                                                                     |
 | ------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `LLM_PROVIDER`      | `openai_compat`           | OpenAI-compatible LLM backend                                                                              |
-| `ASR_PROVIDER`       | `sarvam`                  | `sarvam` (best for Indian languages) or `openai_compat` (Whisper)         |
-| `ASR_API_KEY`        | —                         | Required (speech-to-text) for the active `ASR_PROVIDER`                   |
+| `ASR_PROVIDER`       | `sarvam`                  | `sarvam` (best for Indian languages), `openai_compat` (Whisper) or `medispeak` (hosted Medispeak session API). Ignored if `MEDISPEAK_API_KEY` is set — that key always wins. |
+| `ASR_API_KEY`        | —                         | Required (speech-to-text) for `sarvam`/`openai_compat` `ASR_PROVIDER`     |
 | `ASR_BASE_URL`       | `https://api.sarvam.ai`   | ASR vendor base URL (set to the OpenAI-compatible base for `openai_compat`) |
 | `ASR_MODEL`          | `saaras:v3`               | `saaras:v3` / `saarika:v2.5` (Sarvam) or `whisper-1` (Whisper) |
 | `SARVAM_ASR_MODE`    | `translate`               | `translate` (English output) or `transcribe` (original script)           |
+| `MEDISPEAK_API_KEY`  | —                         | Medispeak account secret (`msk_live_...`); required when `ASR_PROVIDER=medispeak` |
+| `MEDISPEAK_BASE_URL` | —                         | Medispeak v2 API root (e.g. `https://api.medispeak.example/api/v2`); required when `ASR_PROVIDER=medispeak` |
 | `LLM_API_KEY`        | —                         | Required (structured extraction)                                          |
 | `LLM_BASE_URL`       | `https://api.openai.com/v1` | OpenAI-compatible LLM base URL                                     |
 | `LLM_MODEL`         | `gpt-4o-mini` | Extraction model                                                                                            |
