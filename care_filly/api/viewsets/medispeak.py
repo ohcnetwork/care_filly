@@ -51,6 +51,10 @@ def create_medispeak_session(request: HttpRequest) -> JsonResponse:
         return err
     b = body(request)
 
+    modality = b.get("modality") or "audio"
+    if modality not in ("audio", "document"):
+        return error("validation_error", f"Invalid modality: {modality!r}", 400)
+
     facility = resolve_facility(b.get("facility_id"))
     if facility is None:
         return error(
@@ -60,7 +64,7 @@ def create_medispeak_session(request: HttpRequest) -> JsonResponse:
         )
     if not AuthorizationController.call("can_use_filly", user, facility):
         return error("forbidden", "You do not have permission to use filly.", 403)
-    if not filly_enabled(user):
+    if modality == "audio" and not filly_enabled(user):
         return error(
             "filly_not_enabled",
             "Filly is not enabled for your account.",
@@ -71,12 +75,16 @@ def create_medispeak_session(request: HttpRequest) -> JsonResponse:
     fields = b.get("fields")
     if fields:
         outputs.append({"type": "form", "fields": fields})
+    note_prompt = b.get("note_prompt")
+    if note_prompt:
+        outputs.append({"type": "note", "template_ref": note_prompt})
 
     try:
         session = medispeak_client.create_session(
             outputs=outputs,
             language=b.get("language"),
             mode=b.get("mode", "consultation"),
+            modality=modality,
         )
         token = medispeak_client.mint_session_token(str(session["id"]))
     except MedispeakError as exc:

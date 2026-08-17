@@ -29,16 +29,22 @@ def create_session(
     outputs: list[dict],
     language: list[str] | None = None,
     mode: str = "consultation",
+    modality: str | None = None,
 ) -> dict:
-    """Create a Medispeak scribe session. Returns the raw session object."""
+    """Create a Medispeak scribe session. Returns the raw session object.
+    ``modality`` is "audio" (default, Medispeak-side) or "document"
+    """
+    payload = {
+        "outputs": outputs,
+        "language": language or ["auto"],
+        "mode": mode,
+    }
+    if modality:
+        payload["modality"] = modality
     return post(
         f"{_base_url()}/scribe_sessions",
         headers=_headers(),
-        json={
-            "outputs": outputs,
-            "language": language or ["auto"],
-            "mode": mode,
-        },
+        json=payload,
         timeout=10,
     ).json()
 
