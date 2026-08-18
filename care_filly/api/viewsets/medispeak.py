@@ -26,19 +26,6 @@ from care_filly.models import MedispeakSession
 logger = logging.getLogger("care_filly")
 
 
-def filly_enabled(user) -> bool:
-    """Per-user opt-in, stored on CARE core's ``User.preferences``.
-
-    This is a UI-consistency check, NOT access control. CARE's
-    ``set_preferences`` action is authenticated-only and always writes to
-    ``request.user``, so this flag is user-settable by definition. Real
-    access control is the ``can_use_filly`` permission checked alongside it.
-    """
-    preferences = getattr(user, "preferences", None) or {}
-    filly = preferences.get("filly") or {}
-    return bool(isinstance(filly, dict) and filly.get("enabled"))
-
-
 @require_http_methods(["GET"])
 def healthz(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"ok": True})
@@ -60,12 +47,6 @@ def create_medispeak_session(request: HttpRequest) -> JsonResponse:
         )
     if not AuthorizationController.call("can_use_filly", user, facility):
         return error("forbidden", "You do not have permission to use filly.", 403)
-    if not filly_enabled(user):
-        return error(
-            "filly_not_enabled",
-            "Filly is not enabled for your account.",
-            403,
-        )
 
     outputs: list[dict] = [{"type": "transcript"}]
     fields = b.get("fields")
