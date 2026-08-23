@@ -27,16 +27,20 @@ def _headers() -> dict:
 
 def create_session(
     outputs: list[dict],
-    language: list[str] | None = None,
+    language_hint: str | None = None,
     mode: str = "consultation",
 ) -> dict:
-    """Create a Medispeak scribe session. Returns the raw session object."""
+    """Create a Medispeak scribe session. Returns the raw session object.
+
+    Medispeak's ``/scribe_sessions`` takes a single ``language_hint`` string
+    (e.g. "en", "hi", "auto") — not a list — per its documented API.
+    """
     return post(
         f"{_base_url()}/scribe_sessions",
         headers=_headers(),
         json={
             "outputs": outputs,
-            "language": language or ["auto"],
+            "language_hint": language_hint or "auto",
             "mode": mode,
         },
         timeout=10,

@@ -53,10 +53,15 @@ def create_medispeak_session(request: HttpRequest) -> JsonResponse:
     if fields:
         outputs.append({"type": "form", "fields": fields})
 
+    # The browser sends `language` as a list (e.g. ["hi"]); Medispeak's own
+    # API takes a single `language_hint` string.
+    language = b.get("language")
+    language_hint = language[0] if isinstance(language, list) and language else language
+
     try:
         session = medispeak_client.create_session(
             outputs=outputs,
-            language=b.get("language"),
+            language_hint=language_hint,
             mode=b.get("mode", "consultation"),
         )
         token = medispeak_client.mint_session_token(str(session["id"]))
